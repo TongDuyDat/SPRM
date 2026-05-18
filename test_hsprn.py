@@ -13,7 +13,7 @@ import os
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
 from model.hsprn_model import HSPRN
-from model.loss import HSPRNLoss
+from model.losses import HSPRNLoss
 
 def test():
     cfg_dict = {
