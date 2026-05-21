@@ -1,0 +1,10 @@
+# AWA2 — Animals with Attributes 2
+# 50 classes (40 seen / 10 unseen), 85 attributes, 37322 images
+
+data:
+  dataset: "AWA2"
+  batch_size: 64
+
+training:
+  epochs: 50
+  lr: 1.0e-4

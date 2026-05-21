@@ -1,0 +1,10 @@
+# CUB — Caltech-UCSD Birds 200-2011
+# 200 classes (150 seen / 50 unseen), 312 attributes, 11788 images
+
+data:
+  dataset: "CUB"
+  batch_size: 64
+
+training:
+  epochs: 80
+  lr: 5.0e-5

@@ -1,0 +1,53 @@
+# ============================================================
+# HSPRN Default Configuration
+# ============================================================
+# Per-dataset configs inherit from this and override as needed.
+
+data:
+  dataset: "AWA2"
+  data_root: "./data"            # root dir containing xlsa17 dataset folders
+  image_size: 224
+  batch_size: 64
+  num_workers: 4
+  # "feature" = pre-extracted ResNet-101 features from xlsa17
+  # "image"   = raw images (requires images on disk)
+  mode: "feature"
+
+model:
+  vision:
+    backbone_type: "vit_base_patch16_224"
+    pretrained: true
+  semantic:
+    backbone_type: "bert"
+    pretrained: false
+    text_dim: 768
+    shared_dim: 512
+  aggregator:
+    dim_l: 768
+    dim_m: 768
+    dim_h: 768
+    out_dim: 512
+  loss:
+    lambda1: 1.0
+    lambda2: 0.1
+    lambda3: 0.1
+    lambda4: 0.1
+    temperature: 0.07
+
+training:
+  epochs: 50
+  lr: 1.0e-4
+  weight_decay: 1.0e-4
+  optimizer: "adam"               # adam | adamw | sgd
+  scheduler: "cosine"            # cosine | step | none
+  warmup_epochs: 5
+  seed: 42
+  eval_freq: 1                   # evaluate every N epochs
+  save_dir: "./checkpoints"
+  log_dir: "./logs"
+  amp: false                     # mixed precision
+
+eval:
+  mode: "both"                   # zsl | gzsl | both
+
+feature_level: "multilevel"

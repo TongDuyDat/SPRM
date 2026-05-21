@@ -1,0 +1,10 @@
+# AWA1 — Animals with Attributes 1
+# 50 classes (40 seen / 10 unseen), 85 attributes, 30475 images
+
+data:
+  dataset: "AWA1"
+  batch_size: 64
+
+training:
+  epochs: 50
+  lr: 1.0e-4
