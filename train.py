@@ -31,6 +31,8 @@ def parse_args():
                         help="Device: cuda or cpu")
     parser.add_argument("--seed", type=int, default=None,
                         help="Override random seed")
+    parser.add_argument("--semantic_embedding_path", type=str, default=None,
+                        help="Path to cached class semantic embeddings (.pt/.npy/.npz/.mat)")
     return parser.parse_args()
 
 
@@ -46,6 +48,8 @@ def main():
         cfg.data.data_root = args.data_root
     if args.seed is not None:
         cfg.training.seed = args.seed
+    if args.semantic_embedding_path is not None:
+        cfg.data.semantic_embedding_path = args.semantic_embedding_path
 
     # Seed
     set_seed(cfg.training.seed)
@@ -61,7 +65,10 @@ def main():
     data_root = cfg.data.data_root
     print(f"Loading dataset: {dataset_name} from {data_root}")
 
-    splits = build_zsl_splits(data_root, dataset_name)
+    semantic_embedding_path = getattr(cfg.data, "semantic_embedding_path", None)
+    splits = build_zsl_splits(
+        data_root, dataset_name, semantic_embedding_path=semantic_embedding_path
+    )
     trainval = splits["trainval"]
     test_seen = splits["test_seen"]
     test_unseen = splits["test_unseen"]
@@ -73,7 +80,12 @@ def main():
     print(f"  Test seen: {len(test_seen)} samples")
     print(f"  Test unseen: {len(test_unseen)} samples")
     print(f"  Seen classes: {len(seen_classes)}, Unseen: {len(unseen_classes)}")
-    print(f"  Attribute dim: {attribute.shape[1]}")
+    semantic_source = semantic_embedding_path or "xlsa17 attributes"
+    print(f"  Semantic dim: {attribute.shape[1]} ({semantic_source})")
+
+    # Train-time semantic input is always a cached tensor. BERT/CLIP extraction
+    # should happen offline with tools/extract_semantic_embeddings.py.
+    cfg.model.semantic.input_dim = int(attribute.shape[1])
 
     # Model
     model = HSPRN(cfg)

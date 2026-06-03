@@ -14,9 +14,12 @@ class BertEmbedder:
                 #  tokenizer_class=BertTokenizer,
                  model_class=BertModel,
                  max_seq_len=8,
-                 config=None):
+                 config=None,
+                 pretrained=True,
+                 device=None):
         super().__init__()
         self.pretrained_weights = pretrained_weights
+        self.device = torch.device(device or ("cuda" if torch.cuda.is_available() else "cpu"))
         # self.tokenizer_class = tokenizer_class
         self.model_class = model_class
         # self.tokenizer = self.tokenizer_class.from_pretrained(pretrained_weights)
@@ -30,12 +33,15 @@ class BertEmbedder:
             hidden_dropout_prob=config["drop_rate"],
             attention_probs_dropout_prob=config["drop_rate"],
         )
-        self.model = self.model_class.from_pretrained(pretrained_weights).to('cuda')
+        if pretrained:
+            self.model = self.model_class.from_pretrained(pretrained_weights)
+        else:
+            self.model = self.model_class(self.bert_config)
+        self.model = self.model.to(self.device)
         self.max_seq_len = max_seq_len
         # tokenizer = BertTokenizer.from_pretrained(pretrained_weights)
         # model = BertModel.from_pretrained(pretrained_weights)
-        tokenizer = "bert-base-uncased"
-        self.tokenizer = self.get_pretrained_tokenizer(tokenizer)
+        self.tokenizer = self.get_pretrained_tokenizer(pretrained_weights)
         self.vocab_size = self.tokenizer.vocab_size
         
     def get_pretrained_tokenizer(self,from_pretrained):
@@ -64,6 +70,16 @@ class BertEmbedder:
 
         return (text, encoding)
 
+    def tokenize_texts(self, texts):
+        encoding = self.tokenizer(
+            texts,
+            padding="max_length",
+            truncation=True,
+            max_length=self.max_seq_len,
+            return_tensors="pt",
+        )
+        return encoding["input_ids"], encoding["attention_mask"]
+
     def get_bert_embeddings(self,
                             input_ids,mask):
         # examples = create_examples(raw_text)
@@ -74,8 +90,15 @@ class BertEmbedder:
         # all_input_ids = torch.tensor([f.input_ids for f in features], dtype=torch.long)
         # all_input_mask = torch.tensor([f.input_mask for f in features], dtype=torch.long)
         # all_segment_ids = torch.tensor([f.segment_ids for f in features], dtype=torch.long)
-        input_tensor = torch.from_numpy(np.asarray(input_ids)).to('cuda')
-        mask_tensor = torch.from_numpy(np.asarray(mask)).to('cuda')
+        if torch.is_tensor(input_ids):
+            input_tensor = input_ids.to(self.device)
+        else:
+            input_tensor = torch.from_numpy(np.asarray(input_ids)).to(self.device)
+
+        if torch.is_tensor(mask):
+            mask_tensor = mask.to(self.device)
+        else:
+            mask_tensor = torch.from_numpy(np.asarray(mask)).to(self.device)
         
         # If it's a single sentence (1D array), we need to unsqueeze to make it (1, seq_len)
         if input_tensor.dim() == 1:

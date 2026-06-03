@@ -12,14 +12,22 @@ data:
   # "feature" = pre-extracted ResNet-101 features from xlsa17
   # "image"   = raw images (requires images on disk)
   mode: "feature"
+  # Optional cached class semantic embeddings. If null, xlsa17 attributes are used.
+  semantic_embedding_path: null
 
 model:
   vision:
     backbone_type: "vit_base_patch16_224"
     pretrained: true
+    # Optional explicit level selection per-arch.
+    # For ResNet: ['res1','res3','res4'] or ['layer1','layer3','layer4']
+    # For ViT: ['block_4','block_8','tokens_final','cls']
+    levels: null
   semantic:
-    backbone_type: "bert"
+    # Train-time path uses cached semantic tensors. Run BERT/CLIP offline first.
+    backbone_type: "embedding"
     pretrained: false
+    input_dim: null
     text_dim: 768
     shared_dim: 512
   aggregator:
@@ -33,6 +41,10 @@ model:
     lambda3: 0.1
     lambda4: 0.1
     temperature: 0.07
+    # API flags
+    return_full_output: true   # model.forward returns HSPRNOutput
+    use_full: false            # trainer uses full research losses if true
+
 
 training:
   epochs: 50

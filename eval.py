@@ -23,6 +23,8 @@ def parse_args():
     parser.add_argument("--ckpt", type=str, required=True, help="Path to checkpoint")
     parser.add_argument("--data_root", type=str, default=None)
     parser.add_argument("--device", type=str, default="cuda")
+    parser.add_argument("--semantic_embedding_path", type=str, default=None,
+                        help="Path to cached class semantic embeddings (.pt/.npy/.npz/.mat)")
     return parser.parse_args()
 
 
@@ -37,7 +39,8 @@ def compute_all_scores(model, loader, attribute, class_indices, num_total_classe
 
     for features, labels in loader:
         features = features.to(device)
-        scores_subset = model(attr, features)
+        out = model(attr, features)
+        scores_subset = out.scores if hasattr(out, 'scores') else out
 
         scores_full = torch.full(
             (features.size(0), num_total_classes),
@@ -60,6 +63,8 @@ def main():
 
     if args.data_root:
         cfg.data.data_root = args.data_root
+    if args.semantic_embedding_path is not None:
+        cfg.data.semantic_embedding_path = args.semantic_embedding_path
 
     set_seed(cfg.training.seed)
 
@@ -68,13 +73,19 @@ def main():
         device = "cpu"
 
     # Dataset
-    splits = build_zsl_splits(cfg.data.data_root, cfg.data.dataset)
+    semantic_embedding_path = getattr(cfg.data, "semantic_embedding_path", None)
+    splits = build_zsl_splits(
+        cfg.data.data_root,
+        cfg.data.dataset,
+        semantic_embedding_path=semantic_embedding_path,
+    )
     test_seen = splits["test_seen"]
     test_unseen = splits["test_unseen"]
     attribute = splits["attribute"]
     seen_classes = splits["seen_classes"]
     unseen_classes = splits["unseen_classes"]
     all_classes = list(range(attribute.shape[0]))
+    cfg.model.semantic.input_dim = int(attribute.shape[1])
 
     bs = getattr(cfg.data, "batch_size", 64) * 2
     test_seen_loader = DataLoader(test_seen, batch_size=bs, shuffle=False, num_workers=4)

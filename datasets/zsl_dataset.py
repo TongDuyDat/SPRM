@@ -21,6 +21,85 @@ import torch
 from torch.utils.data import Dataset
 
 
+SUPPORTED_DATASETS = ("AWA1", "AWA2", "CUB", "SUN", "APY")
+
+
+def normalize_dataset_name(dataset_name):
+    """Return a canonical xlsa17 dataset name."""
+    name = str(dataset_name).strip().upper()
+    if name not in SUPPORTED_DATASETS:
+        supported = ", ".join(SUPPORTED_DATASETS)
+        raise ValueError(f"Unknown dataset '{dataset_name}'. Supported datasets: {supported}")
+    return name
+
+
+def _mat_indices(indices):
+    """Convert MATLAB 1-indexed split arrays to NumPy 0-indexed int arrays."""
+    return np.asarray(indices).squeeze().astype(np.int64) - 1
+
+
+def load_semantic_embeddings(path):
+    """Load a cached class-level semantic embedding matrix.
+
+    Expected shape is (num_classes, semantic_dim). The recommended format is
+    a .pt file produced by tools/extract_semantic_embeddings.py with an
+    `embeddings` tensor. NumPy arrays and simple .mat files are accepted for
+    compatibility with external ZSL embeddings.
+    """
+    ext = os.path.splitext(path)[1].lower()
+
+    if ext in {".pt", ".pth"}:
+        obj = torch.load(path, map_location="cpu")
+        if isinstance(obj, dict):
+            for key in ("embeddings", "semantic_embeddings", "features", "attribute", "att"):
+                if key in obj:
+                    obj = obj[key]
+                    break
+            else:
+                raise KeyError(
+                    f"No embedding matrix found in {path}. Expected one of: "
+                    "embeddings, semantic_embeddings, features, attribute, att."
+                )
+        tensor = torch.as_tensor(obj, dtype=torch.float32)
+    elif ext == ".npy":
+        tensor = torch.from_numpy(np.load(path)).float()
+    elif ext == ".npz":
+        obj = np.load(path)
+        for key in ("embeddings", "semantic_embeddings", "features", "attribute", "att"):
+            if key in obj:
+                tensor = torch.from_numpy(obj[key]).float()
+                break
+        else:
+            raise KeyError(
+                f"No embedding matrix found in {path}. Expected one of: "
+                "embeddings, semantic_embeddings, features, attribute, att."
+            )
+    elif ext == ".mat":
+        obj = sio.loadmat(path)
+        selected_key = None
+        for key in ("embeddings", "semantic_embeddings", "features", "attribute", "att"):
+            if key in obj:
+                selected_key = key
+                break
+        if selected_key is None:
+            raise KeyError(
+                f"No embedding matrix found in {path}. Expected one of: "
+                "embeddings, semantic_embeddings, features, attribute, att."
+            )
+        arr = obj[selected_key]
+        if selected_key == "att":
+            arr = arr.T
+        tensor = torch.from_numpy(arr).float()
+    else:
+        raise ValueError(f"Unsupported semantic embedding file extension: {ext}")
+
+    if tensor.dim() != 2:
+        raise ValueError(
+            f"Semantic embeddings must have shape (num_classes, dim), got {tuple(tensor.shape)}"
+        )
+    return tensor
+
+
 class ZSLDataset(Dataset):
     """Unified ZSL dataset for AWA1/AWA2/CUB/SUN/APY.
 
@@ -36,7 +115,7 @@ class ZSLDataset(Dataset):
             split: 'train' | 'val_seen' | 'val_unseen' | 'test_seen' | 'test_unseen'.
         """
         super().__init__()
-        self.dataset_name = dataset_name.upper()
+        self.dataset_name = normalize_dataset_name(dataset_name)
         self.split = split
 
         dataset_dir = os.path.join(data_root, self.dataset_name)
@@ -72,18 +151,18 @@ class ZSLDataset(Dataset):
         # ------------------------------------------------------------------
         # Proposed Split indices (1-indexed → 0-indexed)
         # ------------------------------------------------------------------
-        trainval_loc = att_splits["trainval_loc"].squeeze() - 1
-        test_seen_loc = att_splits["test_seen_loc"].squeeze() - 1
-        test_unseen_loc = att_splits["test_unseen_loc"].squeeze() - 1
+        trainval_loc = _mat_indices(att_splits["trainval_loc"])
+        test_seen_loc = _mat_indices(att_splits["test_seen_loc"])
+        test_unseen_loc = _mat_indices(att_splits["test_unseen_loc"])
 
         # Train/val split from trainval: use 80/20 for validation
         train_loc = att_splits.get("train_loc", None)
         val_loc = att_splits.get("val_loc", None)
 
         if train_loc is not None:
-            train_loc = train_loc.squeeze() - 1
+            train_loc = _mat_indices(train_loc)
         if val_loc is not None:
-            val_loc = val_loc.squeeze() - 1
+            val_loc = _mat_indices(val_loc)
 
         # Seen / unseen class indices
         self.seen_classes = np.unique(all_labels[trainval_loc])
@@ -162,22 +241,109 @@ class ZSLDataset(Dataset):
         return feature, label
 
 
-def build_zsl_splits(data_root, dataset_name):
+class AWA1Dataset(ZSLDataset):
+    """Animals with Attributes 1 dataset."""
+
+    def __init__(self, data_root, split="train"):
+        super().__init__(data_root, "AWA1", split=split)
+
+
+class AWA2Dataset(ZSLDataset):
+    """Animals with Attributes 2 dataset."""
+
+    def __init__(self, data_root, split="train"):
+        super().__init__(data_root, "AWA2", split=split)
+
+
+class CUBDataset(ZSLDataset):
+    """Caltech-UCSD Birds 200-2011 dataset."""
+
+    def __init__(self, data_root, split="train"):
+        super().__init__(data_root, "CUB", split=split)
+
+
+class SUNDataset(ZSLDataset):
+    """SUN Attribute dataset."""
+
+    def __init__(self, data_root, split="train"):
+        super().__init__(data_root, "SUN", split=split)
+
+
+class APYDataset(ZSLDataset):
+    """Attribute Pascal and Yahoo dataset."""
+
+    def __init__(self, data_root, split="train"):
+        super().__init__(data_root, "APY", split=split)
+
+
+DATASET_REGISTRY = {
+    "AWA1": AWA1Dataset,
+    "AWA2": AWA2Dataset,
+    "CUB": CUBDataset,
+    "SUN": SUNDataset,
+    "APY": APYDataset,
+}
+
+
+def build_zsl_dataset(data_root, dataset_name, split="train"):
+    """Build one of the supported xlsa17 ZSL datasets."""
+    dataset_cls = DATASET_REGISTRY[normalize_dataset_name(dataset_name)]
+    return dataset_cls(data_root, split=split)
+
+
+def build_dataset(data_root, dataset_name, split="train"):
+    """Alias for build_zsl_dataset, kept for simple dataset factory imports."""
+    return build_zsl_dataset(data_root, dataset_name, split=split)
+
+
+def build_zsl_splits(data_root, dataset_name, semantic_embedding_path=None):
     """Build all standard splits for a ZSL dataset.
 
     Returns:
         dict with keys: 'trainval', 'test_seen', 'test_unseen'
-        and shared metadata: 'attribute', 'seen_classes', 'unseen_classes'
+        and shared metadata: 'attribute', 'seen_classes', 'unseen_classes'.
+        The 'attribute' key is kept for backward compatibility; when
+        semantic_embedding_path is provided, it contains cached semantic
+        embeddings instead of the original dataset attribute matrix.
     """
-    trainval = ZSLDataset(data_root, dataset_name, split="trainval")
-    test_seen = ZSLDataset(data_root, dataset_name, split="test_seen")
-    test_unseen = ZSLDataset(data_root, dataset_name, split="test_unseen")
+    trainval = build_zsl_dataset(data_root, dataset_name, split="trainval")
+    test_seen = build_zsl_dataset(data_root, dataset_name, split="test_seen")
+    test_unseen = build_zsl_dataset(data_root, dataset_name, split="test_unseen")
+
+    semantic = torch.from_numpy(trainval.attribute)
+    if semantic_embedding_path:
+        semantic = load_semantic_embeddings(semantic_embedding_path)
+        if semantic.shape[0] != trainval.num_classes:
+            raise ValueError(
+                f"Semantic embedding class count mismatch: got {semantic.shape[0]}, "
+                f"expected {trainval.num_classes} for {dataset_name}."
+            )
 
     return {
         "trainval": trainval,
         "test_seen": test_seen,
         "test_unseen": test_unseen,
-        "attribute": torch.from_numpy(trainval.attribute),
+        "attribute": semantic,
+        "semantic_embedding": semantic,
         "seen_classes": trainval.seen_classes,
         "unseen_classes": trainval.unseen_classes,
+    }
+
+
+def build_all_zsl_splits(data_root, semantic_embedding_paths=None):
+    """Build standard splits for all supported xlsa17 datasets.
+
+    Args:
+        data_root: Root directory containing AWA1/AWA2/CUB/SUN/APY folders.
+        semantic_embedding_paths: Optional dict mapping dataset name to a cached
+            semantic embedding path.
+    """
+    semantic_embedding_paths = semantic_embedding_paths or {}
+    return {
+        name: build_zsl_splits(
+            data_root,
+            name,
+            semantic_embedding_path=semantic_embedding_paths.get(name),
+        )
+        for name in SUPPORTED_DATASETS
     }

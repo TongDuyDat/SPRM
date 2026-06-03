@@ -23,9 +23,10 @@ def test():
                 'pretrained': False
             },
             'semantic': {
-                'backbone_type': 'bert',
+                'backbone_type': 'embedding',
                 'pretrained': False,
-                'text_dim': 768,
+                'input_dim': 85,
+                'text_dim': 85,
                 'shared_dim': 512
             },
             'aggregator': {
@@ -55,9 +56,7 @@ def test():
     
     vision_feature = torch.randn(B, 3, 224, 224).to(device)
     
-    input_ids = torch.randint(0, 1000, (C, 8)).cpu().numpy()
-    mask = torch.ones(C, 8).cpu().numpy()
-    text_feature = (input_ids, mask)
+    text_feature = torch.randn(C, 85).to(device)
 
     print("Running forward pass...")
     out = model(text_feature, vision_feature)

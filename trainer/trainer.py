@@ -110,11 +110,11 @@ class Trainer:
     def _prepare_semantic_input(self, class_indices=None):
         """Prepare semantic input for the model.
 
-        Returns attribute matrix formatted for the model's text_feature input.
-        The model's PriSematicConstructor expects (input_ids, attention_mask) for BERT,
-        but for attribute-based benchmarks we pass the attribute matrix directly.
+        Returns the class-level semantic tensor used by PriSematicConstructor.
+        This can be the XLSA17 attribute matrix or cached CLIP/BERT embeddings
+        produced offline by tools/extract_semantic_embeddings.py.
 
-        Override this method for different semantic input strategies.
+        Override this method only if the semantic tensor is stored differently.
         """
         if class_indices is not None:
             return self.attribute[class_indices]
@@ -130,12 +130,32 @@ class Trainer:
             features = features.to(self.device)
             labels = labels.to(self.device)
 
-            # Get seen-class attributes as semantic input
+            # Get seen-class semantic embeddings as input
             seen_attr = self._prepare_semantic_input(self.seen_classes)
 
             # Forward: model expects (text_feature, vision_feature)
             # For feature-based training, vision_feature is the pre-extracted feature
-            s_c = self.model(seen_attr, features)
+            out = self.model(seen_attr, features)
+            if hasattr(out, 'scores'):
+                s_c = out.scores
+                # Optional full loss
+                if getattr(self.cfg.model.loss, 'use_full', False):
+                    total_loss, loss_dict = self.criterion(
+                        s_c, mapped_labels,
+                        v_tilde=out.v_embed,
+                        phi_t=out.phi_t,
+                        p_sem=out.p_sem,
+                        p_ref=out.p_ref,
+                        p_sem_unnorm=out.p_sem_unnorm,
+                    )
+                    loss = total_loss
+                else:
+                    tau = getattr(self.cfg.model.loss, "temperature", 0.07)
+                    loss = nn.functional.cross_entropy(s_c / tau, mapped_labels)
+            else:
+                s_c = out
+                tau = getattr(self.cfg.model.loss, "temperature", 0.07)
+                loss = nn.functional.cross_entropy(s_c / tau, mapped_labels)
 
             # Remap labels to seen-class contiguous indices for cross-entropy
             label_map = {int(c): i for i, c in enumerate(self.seen_classes)}
