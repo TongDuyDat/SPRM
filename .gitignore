@@ -1,2 +1,7 @@
 docs/
 config.yaml
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.log
