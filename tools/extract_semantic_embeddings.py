@@ -2,24 +2,27 @@
 """Offline semantic embedding extraction for HSPRN.
 
 This script implements the expensive stage:
-    t_c = {name_c, attr_c, hier_c, desc_c} -> text prompt -> BERT/CLIP embedding
+    t_c = {name_c, attr_c, hier_c, desc_c} -> BERT/CLIP embedding
 
-The training code should consume the saved tensor instead of running the text
-encoder inside PriSematicConstructor.
+Each field is encoded as a separate text sample; fields are not concatenated
+into one prompt. The saved `embeddings` tensor is the unweighted class-level
+mean of the four field embeddings because the current HSPRN semantic bank
+expects one phi(t_c) vector per class.
 
 Expected metadata JSON format:
 {
   "classes": [
     {
-      "name": "zebra",
-      "attributes": ["black", "white", "striped"],
-      "hierarchy": ["animal", "mammal", "equine"],
-      "description": "a black and white striped animal"
+      "name_c": "zebra",
+      "attr_c": ["black", "white", "striped"],
+      "hier_c": ["animal", "mammal", "equine"],
+      "desc_c": "a black and white striped animal"
     }
   ]
 }
 
-A plain list of class records is also accepted.
+A plain list of class records and the `class_descriptions_<dataset>.json`
+format produced by tools/generate_descriptions.py are also accepted.
 """
 
 import argparse
@@ -36,7 +39,52 @@ MODEL_ROOT = ROOT / "model"
 if str(MODEL_ROOT) not in sys.path:
     sys.path.insert(0, str(MODEL_ROOT))
 
-from sematics.extractor import SemanticEmbeddingExtractor
+def first_present(record, *keys):
+    for key in keys:
+        if key in record and record[key] is not None:
+            return record[key]
+    return None
+
+
+def is_missing(value):
+    if value is None:
+        return True
+    if isinstance(value, str):
+        return not value.strip()
+    try:
+        return len(value) == 0
+    except TypeError:
+        return False
+
+
+def canonical_record(record, index):
+    name_c = first_present(record, "name_c", "name", "class_name", "label")
+    attr_c = first_present(record, "attr_c", "attributes", "attrs", "attr", "attribute")
+    hier_c = first_present(record, "hier_c", "hierarchy", "hier", "parents", "path")
+    desc_c = first_present(record, "desc_c", "description", "desc", "text", "caption")
+    fields = {
+        "name_c": name_c,
+        "attr_c": attr_c,
+        "hier_c": hier_c,
+        "desc_c": desc_c,
+    }
+    missing = [key for key, value in fields.items() if is_missing(value)]
+    if missing:
+        raise ValueError(
+            f"Metadata record #{index} is missing required fields: {missing}. "
+            "Each class must provide name_c, attr_c, hier_c, and desc_c."
+        )
+
+    canonical = dict(record)
+    canonical.update(fields)
+    canonical.setdefault("name", name_c)
+    canonical.setdefault("attributes", attr_c)
+    canonical.setdefault("attr", attr_c)
+    canonical.setdefault("hierarchy", hier_c)
+    canonical.setdefault("hier", hier_c)
+    canonical.setdefault("description", desc_c)
+    canonical.setdefault("desc", desc_c)
+    return canonical
 
 
 def parse_args():
@@ -62,9 +110,18 @@ def load_class_records(path):
         obj = json.load(f)
 
     if isinstance(obj, dict):
-        if "classes" not in obj:
-            raise KeyError("Metadata dict must contain a 'classes' key.")
-        records = obj["classes"]
+        if "classes" in obj:
+            records = obj["classes"]
+        elif all(isinstance(value, dict) for value in obj.values()):
+            records = []
+            for class_name, record in obj.items():
+                record = dict(record)
+                record.setdefault("name_c", class_name)
+                records.append(record)
+        else:
+            raise KeyError(
+                "Metadata dict must contain a 'classes' key or be keyed by class name."
+            )
     elif isinstance(obj, list):
         records = obj
     else:
@@ -72,14 +129,42 @@ def load_class_records(path):
 
     if not records:
         raise ValueError("Metadata contains no class records.")
-    return records
+    return [canonical_record(record, index) for index, record in enumerate(records)]
 
 
 def class_names(records):
     names = []
     for i, record in enumerate(records):
-        names.append(record.get("name") or record.get("class_name") or record.get("label") or str(i))
+        names.append(
+            record.get("name_c") or record.get("name") or
+            record.get("class_name") or record.get("label") or str(i)
+        )
     return names
+
+
+def field_to_text(value):
+    if isinstance(value, str):
+        return value.strip()
+    if isinstance(value, (list, tuple)):
+        return ", ".join(str(item).strip() for item in value if str(item).strip())
+    if isinstance(value, dict):
+        return ", ".join(
+            f"{key}: {field_to_text(item)}" for key, item in value.items()
+            if not is_missing(item)
+        )
+    return str(value).strip()
+
+
+def field_texts(records):
+    fields = ("name_c", "attr_c", "hier_c", "desc_c")
+    texts = []
+    for record in records:
+        for field in fields:
+            text = field_to_text(record[field])
+            if not text:
+                raise ValueError(f"Field {field} for {record.get('name_c')} is empty.")
+            texts.append(text)
+    return fields, texts
 
 
 @torch.no_grad()
@@ -129,29 +214,29 @@ def main():
 
     default_model = "bert-base-uncased" if args.encoder == "bert" else "ViT-B/32"
     model_name = args.model_name or default_model
-    extractor = SemanticEmbeddingExtractor(
-        backend=args.encoder,
-        model_name=model_name,
-        max_length=args.max_length,
-    )
-
     records = load_class_records(args.metadata)
-    prompts = extractor.build_prompts(records)
+    field_names, texts = field_texts(records)
 
     if args.encoder == "bert":
         max_length = args.max_length or 128
-        embeddings = encode_with_bert(prompts, model_name, max_length, args.batch_size, device)
+        flat_embeddings = encode_with_bert(texts, model_name, max_length, args.batch_size, device)
     else:
         max_length = args.max_length or 77
-        embeddings = encode_with_clip(prompts, model_name, max_length, args.batch_size, device)
+        flat_embeddings = encode_with_clip(texts, model_name, max_length, args.batch_size, device)
 
+    field_embeddings = flat_embeddings.view(len(records), len(field_names), -1)
+    embeddings = field_embeddings.mean(dim=1)
     if args.normalize:
+        field_embeddings = F.normalize(field_embeddings, p=2, dim=-1)
         embeddings = F.normalize(embeddings, p=2, dim=-1)
 
     output = {
         "embeddings": embeddings,
-        "prompts": prompts,
+        "field_embeddings": field_embeddings,
+        "field_names": list(field_names),
+        "field_texts": texts,
         "class_names": class_names(records),
+        "class_semantics": records,
         "encoder": args.encoder,
         "model_name": model_name,
         "max_length": max_length,
