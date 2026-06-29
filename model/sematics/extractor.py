@@ -9,9 +9,9 @@ class SemanticEmbeddingExtractor:
 
     The expected raw input is a class-level semantic record matching Eq. 4:
     {"name": ..., "attributes": ..., "hierarchy": ..., "description": ...}.
-    Missing fields are allowed because public ZSL datasets do not provide all
-    four semantic sources uniformly. Training should consume the cached tensor
-    saved by tools/extract_semantic_embeddings.py, not raw metadata.
+    All four semantic sources are required for training. Training should
+    consume the cached tensor saved by tools/extract_semantic_embeddings.py,
+    not raw metadata.
     """
 
     def __init__(
@@ -45,16 +45,30 @@ class SemanticEmbeddingExtractor:
 
     def build_prompt(self, class_semantic: Mapping[str, Any]) -> str:
         """Convert one t_c record into a single text prompt."""
-        name = self._first_present(class_semantic, "name", "class_name", "label")
+        name = self._first_present(class_semantic, "name_c", "name", "class_name", "label")
         attrs = self._first_present(
-            class_semantic, "attributes", "attrs", "attr", "attribute"
+            class_semantic, "attr_c", "attributes", "attrs", "attr", "attribute"
         )
         hierarchy = self._first_present(
-            class_semantic, "hierarchy", "hier", "parents", "path"
+            class_semantic, "hier_c", "hierarchy", "hier", "parents", "path"
         )
         description = self._first_present(
-            class_semantic, "description", "desc", "text", "caption"
+            class_semantic, "desc_c", "description", "desc", "text", "caption"
         )
+        missing = []
+        for field_name, value in (
+            ("name_c", name),
+            ("attr_c", attrs),
+            ("hier_c", hierarchy),
+            ("desc_c", description),
+        ):
+            if self._is_missing(value):
+                missing.append(field_name)
+        if missing:
+            raise ValueError(
+                "Each class semantic record must contain name_c, attr_c, hier_c, "
+                f"and desc_c. Missing: {missing}"
+            )
         attr_names = self._first_present(class_semantic, "attribute_names", "attr_names")
 
         parts = []
@@ -144,6 +158,17 @@ class SemanticEmbeddingExtractor:
             if key in record and record[key] is not None:
                 return record[key]
         return None
+
+    @staticmethod
+    def _is_missing(value: Any) -> bool:
+        if value is None:
+            return True
+        if isinstance(value, str):
+            return not value.strip()
+        try:
+            return len(value) == 0
+        except TypeError:
+            return False
 
     def _format_attributes(self, attrs: Any, attr_names: Any = None) -> str:
         if attrs is None:

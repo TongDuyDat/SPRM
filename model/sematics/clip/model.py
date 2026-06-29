@@ -283,6 +283,56 @@ class Transformer(nn.Module):
         return self.resblocks(x)
 
 
+class CLIPTextEncoder(nn.Module):
+    """Text-only CLIP tower with state-dict keys matching the full model."""
+
+    def __init__(self, embed_dim, context_length, vocab_size, transformer_width,
+                 transformer_heads, transformer_layers, design_details):
+        super().__init__()
+        self.context_length = context_length
+        self.transformer = Transformer(
+            width=transformer_width,
+            layers=transformer_layers,
+            heads=transformer_heads,
+            attn_mask=self.build_attention_mask(),
+            prompts_needed=design_details["language_depth"],
+            text_layer=True,
+            need_weights=False,
+            design_details=design_details,
+        )
+        self.token_embedding = nn.Embedding(vocab_size, transformer_width)
+        self.positional_embedding = nn.Parameter(
+            torch.empty(context_length, transformer_width)
+        )
+        self.ln_final = LayerNorm(transformer_width)
+        self.text_projection = nn.Parameter(
+            torch.empty(transformer_width, embed_dim)
+        )
+
+    def build_attention_mask(self):
+        mask = torch.empty(self.context_length, self.context_length)
+        mask.fill_(float("-inf"))
+        mask.triu_(1)
+        return mask
+
+    @property
+    def dtype(self):
+        return self.text_projection.dtype
+
+    def encode_text(self, text):
+        x = self.token_embedding(text).type(self.dtype)
+        x = x + self.positional_embedding.type(self.dtype)
+        x = x.permute(1, 0, 2)
+        x = self.transformer(x)
+        x = x.permute(1, 0, 2)
+        x = self.ln_final(x).type(self.dtype)
+        batch_indices = torch.arange(x.shape[0], device=x.device)
+        return x[batch_indices, text.argmax(dim=-1)] @ self.text_projection
+
+    def forward(self, text):
+        return self.encode_text(text)
+
+
 class VisionTransformer(nn.Module):
     def __init__(self, input_resolution: int, patch_size: int, width: int, layers: int, heads: int, output_dim: int, design_details, need_weights: bool = True):
         super().__init__()
@@ -653,4 +703,44 @@ def build_model(state_dict: dict, design_details):
     except:
         missing_keys, _ = model.load_state_dict(state_dict, strict=False)
         print('Weights not found for some missing keys: ', missing_keys)
+    return model.eval()
+
+
+def build_text_model(state_dict: dict, design_details):
+    """Build only CLIP's text tower and discard all visual checkpoint weights."""
+    embed_dim = state_dict["text_projection"].shape[1]
+    context_length = state_dict["positional_embedding"].shape[0]
+    vocab_size = state_dict["token_embedding.weight"].shape[0]
+    transformer_width = state_dict["ln_final.weight"].shape[0]
+    transformer_heads = transformer_width // 64
+    transformer_layers = len({
+        key.split(".")[2]
+        for key in state_dict
+        if key.startswith("transformer.resblocks")
+    })
+
+    model = CLIPTextEncoder(
+        embed_dim,
+        context_length,
+        vocab_size,
+        transformer_width,
+        transformer_heads,
+        transformer_layers,
+        design_details,
+    )
+    text_prefixes = ("transformer.", "token_embedding.", "ln_final.")
+    text_state = {
+        key: value
+        for key, value in state_dict.items()
+        if key.startswith(text_prefixes)
+        or key in {"positional_embedding", "text_projection"}
+    }
+
+    convert_weights(model)
+    missing, unexpected = model.load_state_dict(text_state, strict=False)
+    if missing or unexpected:
+        raise RuntimeError(
+            "Invalid CLIP text checkpoint: "
+            f"missing={missing}, unexpected={unexpected}"
+        )
     return model.eval()

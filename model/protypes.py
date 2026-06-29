@@ -2,139 +2,232 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-class SematicBank(nn.Module):
-    """
-    4.2.3. Semantic Encoding & 4.2.4. Output
-    Implements the semantic prototype bank.
-    """
-    def __init__(self, cfg):
-        super(SematicBank, self).__init__()
-        self.cfg = cfg
-        # Ws is a learnable projection matrix
-        # Projects from encoded text feature dim to shared semantic space dim
-        text_dim = getattr(cfg.model.semantic, 'text_dim', 768)
-        shared_dim = getattr(cfg.model.semantic, 'shared_dim', 512)
 
+class SematicBank(nn.Module):
+    """Backward-compatible semantic prototype bank for Eqs. (6)-(8)."""
+
+    def __init__(self, cfg):
+        super().__init__()
+        semantic_cfg = cfg.model.semantic
+        text_dim = getattr(semantic_cfg, "input_dim", None)
+        if text_dim is None:
+            text_dim = getattr(semantic_cfg, "text_dim", 768)
+        shared_dim = getattr(semantic_cfg, "shared_dim", 512)
         self.Ws = nn.Linear(text_dim, shared_dim, bias=False)
 
     def forward(self, phi_t):
-        """
-        Args:
-            phi_t: Encoded semantic features phi(tc) from text encoder or cached embeddings, shape (..., text_dim)
-        Returns:
-            (p_sem_norm, p_sem_unnorm): normalized & pre-norm prototypes, both (..., shared_dim)
-        """
-        # Eq 6: psem_c = Ws phi(tc)
-        psem_c = self.Ws(phi_t)
-
-        # Eq 7: ~psem_c = psem_c / ||psem_c||_2
-        psem_normalized = F.normalize(psem_c, p=2, dim=-1)
-
-        return psem_normalized, psem_c
-'}``` }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }}
+        p_sem = self.Ws(phi_t)
+        p_sem_norm = F.normalize(p_sem, p=2, dim=-1)
+        return p_sem_norm, p_sem
 
 
-# NOTE: no trailing changes beyond here
-'}``` }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }}
-
-# end of file
-'}``` }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }}
-
-# end of edit
-'}``` }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }  }}
 class InstancePrototypeRefiner(nn.Module):
-    """
-    4.5 Instance-aware Prototype Refiner
-    Refines semantic prototypes using visual features.
-    """
-    def __init__(self, cfg):
-        super(InstancePrototypeRefiner, self).__init__()
-        self.cfg = cfg
-        
-        # shared_dim is the dimension of the prototype (e.g. 512)
-        self.shared_dim = getattr(cfg.model.semantic, 'shared_dim', 512)
-        
-        # Visual feature dimension might be different (e.g., zh from ViT is 768, or ResNet is 1024)
-        # We assume the visual encoder highest level output has this dimension
-        self.vis_dim = getattr(cfg.model.aggregator, 'dim_h', 768) 
-        
-        # Matrix Wr for the gating vector (Eq. 19).
-        # Input to Wr is concat of [v, p, v \odot p].
-        # However, v and p might have different dimensions, so we project v first.
-        self.U = nn.Linear(self.vis_dim, self.shared_dim, bias=False) # Eq. 20
-        
-        # After projecting v to q, both q and p have dimension shared_dim.
-        # So concat [q; p; q \odot p] has size 3 * shared_dim.
-        self.Wr = nn.Linear(3 * self.shared_dim, self.shared_dim)
+    """Instance-aware Prototype Refiner for Eqs. (18)-(21)."""
 
-    def forward(self, p_sem, img_feat):
-        """
-        Args:
-            p_sem: \tilde{p}^{sem}_c, shape (..., shared_dim)
-            img_feat: Visual features Z from visual encoder. Usually Z = (zl, zm, zh).
-                      We'll extract the highest level feature (zh) or pool it.
-        Returns:
-            p_hat: Refined unnormalized prototypes, shape (..., shared_dim)
-        """
-        # Get highest-level visual feature zh
-        if isinstance(img_feat, tuple) or isinstance(img_feat, list):
-            zh = img_feat[-1]
+    def __init__(self, cfg):
+        super().__init__()
+        semantic_cfg = cfg.model.semantic
+        aggregator_cfg = cfg.model.aggregator
+        refiner_cfg = getattr(cfg.model, "refiner", object())
+
+        self.prototype_dim = getattr(semantic_cfg, "shared_dim", 512)
+        self.visual_dim = getattr(
+            refiner_cfg,
+            "visual_dim",
+            getattr(aggregator_cfg, "out_dim", self.prototype_dim),
+        )
+
+        if self.visual_dim == self.prototype_dim:
+            self.visual_gate = nn.Identity()
         else:
-            zh = img_feat
-            
-        # GAP if zh is spatial [B, N, C] or [B, C, H, W]
-        if zh.dim() == 3:
-            zh = zh.mean(dim=1)
-        elif zh.dim() == 4:
-            zh = zh.mean(dim=[2, 3])
-            
-        # Eq 20: q = U \tilde{v} (Here we use zh as the visual feature for refinement)
-        q = self.U(zh) # shape: (B, shared_dim)
-        
-        # To compute gating vector for all classes, we need to broadcast.
-        # q is (B, D). p_sem is (C, D).
-        # We unsqueeze to make q (B, 1, D) and p_sem (1, C, D)
-        B = q.shape[0]
+            self.visual_gate = nn.Linear(self.visual_dim, self.prototype_dim, bias=False)
+
+        self.U = nn.Linear(self.visual_dim, self.prototype_dim, bias=False)
+        self.Wr = nn.Linear(3 * self.prototype_dim, self.prototype_dim)
+        self._gate_is_identity = isinstance(self.visual_gate, nn.Identity)
+
+    def forward(self, p_sem: torch.Tensor, v_tilde: torch.Tensor) -> torch.Tensor:
+        """Return unnormalized refined prototypes p_hat with shape [B,C,d].
+            p_sem: [C,d] or [B,C,d]
+            v_tilde: [B,d]
+            p_sem is the semantic prototype from the semantic bank, and 
+            v_tilde is the visual representation from the aggregator. The refiner computes a gate
+        """
+        if v_tilde.dim() != 2:
+            raise ValueError("v_tilde must have shape [B,d].")
+        if v_tilde.shape[-1] != self.visual_dim:
+            raise ValueError(
+                f"v_tilde last dim ({v_tilde.shape[-1]}) does not match "
+                f"configured visual_dim ({self.visual_dim})."
+            )
+        if p_sem.dim() not in (2, 3):
+            raise ValueError("p_sem must have shape [C,d] or [B,C,d].")
+        if p_sem.shape[-1] != self.prototype_dim:
+            raise ValueError(
+                f"p_sem last dim ({p_sem.shape[-1]}) does not match "
+                f"configured prototype_dim ({self.prototype_dim})."
+            )
+
+        batch_size = v_tilde.shape[0]
+        v_gate = self.visual_gate(v_tilde)
+        if not self._gate_is_identity:
+            v_gate = F.normalize(v_gate, p=2, dim=-1)
+
+        q = self.U(v_tilde)
+
         if p_sem.dim() == 2:
-            C = p_sem.shape[0]
-            q_expand = q.unsqueeze(1).expand(B, C, -1)
-            p_expand = p_sem.unsqueeze(0).expand(B, C, -1)
+            class_count = p_sem.shape[0]
+            p_expand = p_sem.unsqueeze(0).expand(batch_size, class_count, -1)
         else:
-            # If p_sem is already broadcasted (B, C, D)
-            q_expand = q.unsqueeze(1).expand(-1, p_sem.shape[1], -1)
+            if p_sem.shape[0] != batch_size:
+                raise ValueError("Batch dimension of p_sem and v_tilde must match.")
+            class_count = p_sem.shape[1]
             p_expand = p_sem
-            
-        # Eq 19: g_c = \sigma(W_r [\tilde{v}; \tilde{p}^{sem}_c; \tilde{v} \odot \tilde{p}^{sem}_c])
-        # We use q instead of \tilde{v} since it is already projected to the right dimension.
-        concat_feat = torch.cat([
-            q_expand, 
-            p_expand, 
-            q_expand * p_expand
-        ], dim=-1) # shape: (B, C, 3*shared_dim)
-        
-        gc = torch.sigmoid(self.Wr(concat_feat)) # shape: (B, C, shared_dim)
-        
-        # Eq 21: \hat{p}_c = \tilde{p}^{sem}_c + g_c \odot q
-        p_hat = p_expand + gc * q_expand
-        
-        return p_hat
+
+        v_expand = v_gate.unsqueeze(1).expand(batch_size, class_count, -1)
+        q_expand = q.unsqueeze(1).expand(batch_size, class_count, -1)
+
+        gate_input = torch.cat(
+            [v_expand, p_expand, v_expand * p_expand],
+            dim=-1,
+        )
+        gate = torch.sigmoid(self.Wr(gate_input))
+        return p_expand + gate * q_expand
 
 
 class RefinedPrototypeBank(nn.Module):
-    """
-    4.5.5 Output (Refined Prototype Bank)
-    Normalizes the refined prototypes.
-    """
+    """Normalize refined prototypes for Eq. (22)."""
+
     def __init__(self, cfg):
-        super(RefinedPrototypeBank, self).__init__()
-        
-    def forward(self, p_hat):
-        """
-        Args:
-            p_hat: Refined prototypes \hat{p}_c
-        Returns:
-            p_ref: \tilde{p}^{ref}_c (Normalized), shape (B, C, D)
-        """
-        # Eq 22: \tilde{p}^{ref}_c = \hat{p}_c / ||\hat{p}_c||_2
-        p_ref = F.normalize(p_hat, p=2, dim=-1)
-        return p_ref
+        super().__init__()
+
+    def forward(self, p_hat: torch.Tensor) -> torch.Tensor:
+        return F.normalize(p_hat, p=2, dim=-1)
+
+
+# if __name__ == "__main__":
+#     import types
+
+#     def make_cfg(shared_dim, visual_dim):
+#         """Build a minimal cfg object mimicking the expected structure."""
+#         cfg = types.SimpleNamespace()
+#         cfg.model = types.SimpleNamespace()
+#         cfg.model.semantic = types.SimpleNamespace(shared_dim=shared_dim)
+#         cfg.model.aggregator = types.SimpleNamespace(out_dim=visual_dim)
+#         return cfg
+
+#     def check_unit_norm(name, tensor):
+#         norms = tensor.norm(p=2, dim=-1)
+#         ok = torch.allclose(norms, torch.ones_like(norms), atol=1e-5)
+#         status = "OK" if ok else "FAIL"
+#         print(f"  [{status}] {name}: L2 norms ~1 -> {ok}")
+
+#     print("=" * 70)
+#     print("Case 1: visual_dim == prototype_dim (visual_gate is Identity)")
+#     print("=" * 70)
+#     cfg1 = make_cfg(shared_dim=512, visual_dim=512)
+#     refiner1 = InstancePrototypeRefiner(cfg1)
+#     bank1 = RefinedPrototypeBank(cfg1)
+#     print(f"  gate_is_identity = {refiner1._gate_is_identity}")
+
+#     B, C, d = 4, 10, 512
+#     p_sem_2d = torch.randn(C, d)
+#     v_tilde = torch.randn(B, d)
+#     p_hat = refiner1(p_sem_2d, v_tilde)
+#     p_ref = bank1(p_hat)
+#     print(f"  p_sem [C,d] input -> p_hat shape {tuple(p_hat.shape)} (expect {(B, C, d)})")
+#     check_unit_norm("p_ref", p_ref)
+
+#     print()
+#     print("=" * 70)
+#     print("Case 2: visual_dim != prototype_dim (visual_gate is Linear)")
+#     print("=" * 70)
+#     cfg2 = make_cfg(shared_dim=512, visual_dim=2048)
+#     refiner2 = InstancePrototypeRefiner(cfg2)
+#     bank2 = RefinedPrototypeBank(cfg2)
+#     print(f"  gate_is_identity = {refiner2._gate_is_identity}")
+
+#     B, C, d_proto, d_vis = 4, 10, 512, 2048
+#     p_sem_2d = torch.randn(C, d_proto)
+#     v_tilde = torch.randn(B, d_vis)
+#     p_hat = refiner2(p_sem_2d, v_tilde)
+#     p_ref = bank2(p_hat)
+#     print(f"  p_sem [C,d] input -> p_hat shape {tuple(p_hat.shape)} (expect {(B, C, d_proto)})")
+#     check_unit_norm("p_ref", p_ref)
+
+#     print()
+#     print("=" * 70)
+#     print("Case 3: p_sem given as [B,C,d] (per-batch prototypes) instead of [C,d]")
+#     print("=" * 70)
+#     p_sem_3d = torch.randn(B, C, d_proto)
+#     p_hat_3d = refiner2(p_sem_3d, v_tilde)
+#     p_ref_3d = bank2(p_hat_3d)
+#     print(f"  p_sem [B,C,d] input -> p_hat shape {tuple(p_hat_3d.shape)} (expect {(B, C, d_proto)})")
+#     check_unit_norm("p_ref_3d", p_ref_3d)
+
+#     print()
+#     print("=" * 70)
+#     print("Case 4: different batch size (B=1) and class count (C=1), sanity check")
+#     print("=" * 70)
+#     p_sem_small = torch.randn(1, d_proto)
+#     v_small = torch.randn(1, d_vis)
+#     p_hat_small = refiner2(p_sem_small, v_small)
+#     print(f"  B=1, C=1 -> p_hat shape {tuple(p_hat_small.shape)} (expect (1, 1, {d_proto}))")
+
+#     print()
+#     print("=" * 70)
+#     print("Case 5 (expected error): v_tilde last dim mismatched with visual_dim")
+#     print("=" * 70)
+#     try:
+#         bad_v = torch.randn(B, 4096)  # wrong last dim, should be 2048
+#         refiner2(p_sem_2d, bad_v)
+#         print("  [FAIL] no error was raised")
+#     except ValueError as e:
+#         print(f"  [OK] raised ValueError: {e}")
+
+#     print()
+#     print("=" * 70)
+#     print("Case 6 (expected error): p_sem last dim mismatched with prototype_dim")
+#     print("=" * 70)
+#     try:
+#         bad_p_sem = torch.randn(C, 999)  # wrong last dim, should be 512
+#         refiner2(bad_p_sem, v_tilde)
+#         print("  [FAIL] no error was raised")
+#     except ValueError as e:
+#         print(f"  [OK] raised ValueError: {e}")
+
+#     print()
+#     print("=" * 70)
+#     print("Case 7 (expected error): v_tilde has wrong rank (3D instead of 2D)")
+#     print("=" * 70)
+#     try:
+#         bad_rank_v = torch.randn(B, 1, d_vis)
+#         refiner2(p_sem_2d, bad_rank_v)
+#         print("  [FAIL] no error was raised")
+#     except ValueError as e:
+#         print(f"  [OK] raised ValueError: {e}")
+
+#     print()
+#     print("=" * 70)
+#     print("Case 8 (expected error): p_sem rank invalid (1D)")
+#     print("=" * 70)
+#     try:
+#         bad_rank_p = torch.randn(d_proto)
+#         refiner2(bad_rank_p, v_tilde)
+#         print("  [FAIL] no error was raised")
+#     except ValueError as e:
+#         print(f"  [OK] raised ValueError: {e}")
+
+#     print()
+#     print("=" * 70)
+#     print("Case 9 (expected error): p_sem [B,C,d] batch mismatch with v_tilde batch")
+#     print("=" * 70)
+#     try:
+#         mismatched_p_sem = torch.randn(B + 1, C, d_proto)  # wrong batch dim
+#         refiner2(mismatched_p_sem, v_tilde)
+#         print("  [FAIL] no error was raised")
+#     except ValueError as e:
+#         print(f"  [OK] raised ValueError: {e}")
+
+#     print()
+#     print("All test cases executed.")

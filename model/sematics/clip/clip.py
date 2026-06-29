@@ -10,7 +10,7 @@ from PIL import Image
 from torchvision.transforms import Compose, Resize, CenterCrop, ToTensor, Normalize
 from tqdm import tqdm
 
-from .model import build_model
+from .model import build_model, build_text_model
 from .simple_tokenizer import SimpleTokenizer as _Tokenizer
 
 try:
@@ -24,7 +24,7 @@ if packaging.version.parse(torch.__version__) < packaging.version.parse("1.7.1")
     warnings.warn("PyTorch version 1.7.1 or higher is recommended")
 
 
-__all__ = ["available_models", "load", "tokenize"]
+__all__ = ["available_models", "load", "load_text", "tokenize"]
 _tokenizer = _Tokenizer()
 
 _MODELS = {
@@ -136,7 +136,8 @@ def load(name: str, device: Union[str, torch.device] = "cuda" if torch.cuda.is_a
             state_dict = torch.load(opened_file, map_location="cpu")
 
     if not jit:
-        model = build_model(state_dict or model.state_dict()).to(device)
+        _default_design = {"trainer": "", "language_depth": 0, "vision_depth": 0, "vision_ctx": 0}
+        model = build_model(state_dict or model.state_dict(), _default_design).to(device)
         if str(device) == "cpu":
             model.float()
         return model, _transform(model.visual.input_resolution)
@@ -186,6 +187,42 @@ def load(name: str, device: Union[str, torch.device] = "cuda" if torch.cuda.is_a
         model.float()
 
     return model, _transform(model.input_resolution.item())
+
+
+def load_text(name: str, device: Union[str, torch.device] = "cpu", download_root: str = None):
+    """Load only CLIP's text tower and never move visual weights onto the device."""
+    if name in _MODELS:
+        model_path = _download(
+            _MODELS[name],
+            download_root or os.path.expanduser("~/.cache/clip"),
+        )
+    elif os.path.isfile(name):
+        model_path = name
+    else:
+        raise RuntimeError(
+            f"Model {name} not found; available models = {available_models()}"
+        )
+
+    checkpoint = None
+    with open(model_path, "rb") as opened_file:
+        try:
+            checkpoint = torch.jit.load(opened_file, map_location="cpu").eval()
+            state_dict = checkpoint.state_dict()
+        except RuntimeError:
+            opened_file.seek(0)
+            state_dict = torch.load(opened_file, map_location="cpu")
+
+    design = {
+        "trainer": "",
+        "language_depth": 0,
+        "vision_depth": 0,
+        "vision_ctx": 0,
+    }
+    model = build_text_model(state_dict, design).to(device)
+    del state_dict, checkpoint
+    if str(device) == "cpu":
+        model.float()
+    return model
 
 
 def tokenize(texts: Union[str, List[str]], context_length: int = 77, truncate: bool = False) -> Union[torch.IntTensor, torch.LongTensor]:

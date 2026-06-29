@@ -1,4 +1,5 @@
 from .extractor import SemanticEmbeddingExtractor
+import torch
 import torch.nn as nn
 
 def _cfg_get(cfg, name, default=None):
@@ -50,22 +51,27 @@ def _build_bert(pretrained=True, **kwargs):
     class BertWrapper(nn.Module):
         def __init__(self):
             super().__init__()
-            # BertEmbedder doesn't inherit from nn.Module in the original code,
-            # but we need it to be part of the module tree if we want its weights saved
             self.embedder = BertEmbedder(**kwargs)
-            # Expose out_features so projector knows the output dimension
             self.out_features = cfg["hidden_size"]
             self.tokenizer = self.embedder.tokenizer
+            self.bert = self.embedder.model
 
         def forward(self, x):
-            """
-            Expects x to be a tuple (input_ids, attention_mask)
-            or handles raw text if we modify the constructor pipeline.
-            """
+            if isinstance(x, str):
+                x = [x]
+            if isinstance(x, list):
+                x = self.tokenize(x)
             input_ids, mask = x
             return self.embedder.get_bert_embeddings(input_ids, mask)
 
-        def tokenize_texts(self, texts):
+        def _apply(self, fn):
+            super()._apply(fn)
+            for param in self.bert.parameters():
+                self.embedder.device = param.device
+                break
+            return self
+
+        def tokenize(self, texts):
             return self.embedder.tokenize_texts(texts)
 
     return BertWrapper()
@@ -79,16 +85,140 @@ def _build_clip(pretrained=True, **kwargs):
     class CLIPTextWrapper(nn.Module):
         def __init__(self):
             super().__init__()
-            from .clip import load
+            from .clip import load_text, tokenize
 
-            self.model, _ = load(model_name)
+            self.model = load_text(model_name, device="cpu")
             self.out_features = int(self.model.text_projection.shape[1])
+            self.context_length = _cfg_get(semantic_cfg, "max_text_len", 77)
+            self._tokenize_fn = tokenize
 
         def forward(self, x):
+            if isinstance(x, str):
+                x = [x]
+            if isinstance(x, (list, tuple)):
+                x = self.tokenize(x)
             device = next(self.model.parameters()).device
             return self.model.encode_text(x.to(device)).float()
 
+        def _apply(self, fn):
+            super()._apply(fn)
+            for param in self.model.parameters():
+                if param.device.type == "cpu":
+                    self.model = self.model.float()
+                elif param.device.type == "cuda":
+                    from .clip.model import convert_weights
+                    convert_weights(self.model)
+                break
+            return self
+
+        def tokenize(self, texts):
+            return self._tokenize_fn(
+                texts, context_length=self.context_length, truncate=True,
+            )
+
     return CLIPTextWrapper()
+
+def _build_tinyclip(pretrained=True, **kwargs):
+    if not pretrained:
+        raise ValueError("TinyCLIP semantic backbone requires pretrained text weights.")
+    semantic_cfg = kwargs.get("semantic_cfg")
+    model_name = _cfg_get(
+        semantic_cfg,
+        "pretrained_weights",
+        "./pre-trained/text/tinyclip-text-3m",
+    )
+
+    class TinyCLIPTextWrapper(nn.Module):
+        def __init__(self):
+            super().__init__()
+            from transformers import AutoTokenizer, CLIPTextModelWithProjection
+
+            self.model = CLIPTextModelWithProjection.from_pretrained(model_name)
+            self.tokenizer = AutoTokenizer.from_pretrained(model_name)
+            self.out_features = int(self.model.config.projection_dim)
+            self.max_text_len = min(
+                int(_cfg_get(semantic_cfg, "max_text_len", 77)),
+                int(self.model.config.max_position_embeddings),
+            )
+
+        def forward(self, texts):
+            if isinstance(texts, str):
+                texts = [texts]
+            encoded = self.tokenizer(
+                list(texts),
+                padding="max_length",
+                truncation=True,
+                max_length=self.max_text_len,
+                return_tensors="pt",
+            )
+            device = next(self.model.parameters()).device
+            encoded = {key: value.to(device) for key, value in encoded.items()}
+            return self.model(**encoded).text_embeds.float()
+
+        def _apply(self, fn):
+            super()._apply(fn)
+            for param in self.model.parameters():
+                if param.device.type == "cpu":
+                    self.model.float()
+                elif param.device.type == "cuda":
+                    self.model.half()
+                break
+            return self
+
+    return TinyCLIPTextWrapper()
+
+def _build_sbert(pretrained=True, **kwargs):
+    if not pretrained:
+        raise ValueError("Sentence-BERT semantic backbone requires pretrained weights.")
+    semantic_cfg = kwargs.get("semantic_cfg")
+    model_name = _cfg_get(
+        semantic_cfg,
+        "pretrained_weights",
+        "./pre-trained/text/sbert-minilm-l3",
+    )
+
+    class SentenceBERTWrapper(nn.Module):
+        def __init__(self):
+            super().__init__()
+            from transformers import AutoModel, AutoTokenizer
+
+            self.model = AutoModel.from_pretrained(model_name)
+            self.tokenizer = AutoTokenizer.from_pretrained(model_name)
+            self.out_features = int(self.model.config.hidden_size)
+            self.max_text_len = min(
+                int(_cfg_get(semantic_cfg, "max_text_len", 128)),
+                int(self.model.config.max_position_embeddings),
+            )
+
+        def forward(self, texts):
+            if isinstance(texts, str):
+                texts = [texts]
+            encoded = self.tokenizer(
+                list(texts),
+                padding=True,
+                truncation=True,
+                max_length=self.max_text_len,
+                return_tensors="pt",
+            )
+            device = next(self.model.parameters()).device
+            encoded = {key: value.to(device) for key, value in encoded.items()}
+            token_embeddings = self.model(**encoded).last_hidden_state
+            mask = encoded["attention_mask"].unsqueeze(-1).to(token_embeddings.dtype)
+            pooled = (token_embeddings * mask).sum(dim=1)
+            pooled = pooled / mask.sum(dim=1).clamp_min(1)
+            return pooled.float()
+
+        def _apply(self, fn):
+            super()._apply(fn)
+            for param in self.model.parameters():
+                if param.device.type == "cpu":
+                    self.model.float()
+                elif param.device.type == "cuda":
+                    self.model.half()
+                break
+            return self
+
+    return SentenceBERTWrapper()
 
 _SEMANTIC_REGISTRY = {
     "attribute": _build_identity,
@@ -96,6 +226,8 @@ _SEMANTIC_REGISTRY = {
     "embedding": _build_identity,
     "bert": _build_bert,
     "clip": _build_clip,
+    "tinyclip": _build_tinyclip,
+    "sbert": _build_sbert,
 }
 
 def load_semantic_backbone(backbone_type: str = 'embedding', pretrained: bool = True, **kwargs):

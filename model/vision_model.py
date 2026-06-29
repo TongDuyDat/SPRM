@@ -26,12 +26,28 @@ class VisionModel(nn.Module):
     def __init__(self, cfg):
         super().__init__()
         self.cfg = cfg
+        vision_cfg = cfg.model.vision
+        backbone_kwargs = {}
+        for key in ("clip_model", "download_root"):
+            if hasattr(vision_cfg, key):
+                backbone_kwargs[key] = getattr(vision_cfg, key)
         self.arch_type, self.backbone = load_vision_backbone(
-            backbone_type=cfg.model.vision.backbone_type,
-            pretrained=getattr(cfg.model.vision, 'pretrained', True),
+            backbone_type=vision_cfg.backbone_type,
+            pretrained=getattr(vision_cfg, 'pretrained', True),
+            **backbone_kwargs,
         )
         self.feature_lv = getattr(cfg, 'feature_level', 'multilevel')
         self.levels = getattr(getattr(cfg.model, 'vision', object()), 'levels', None)
+        self.freeze_backbone = bool(getattr(vision_cfg, 'freeze', False))
+        if self.freeze_backbone:
+            self.backbone.requires_grad_(False)
+            self.backbone.eval()
+
+    def train(self, mode: bool = True):
+        super().train(mode)
+        if self.freeze_backbone:
+            self.backbone.eval()
+        return self
 
     # ---------------------- ViT helpers ----------------------
     def _vit_tokens_after_blocks(self, x) -> Tuple[torch.Tensor, torch.Tensor]:
@@ -121,6 +137,13 @@ class VisionModel(nn.Module):
         # Pre-extracted feature vectors pass-through
         if x.dim() == 2:
             return x
+
+        if self.arch_type == 'clip':
+            if isinstance(self.levels, (list, tuple)) and len(self.levels) > 0:
+                raise ValueError("CLIP visual backbone currently returns pooled image embeddings; do not set vision.levels.")
+            if self.feature_lv not in ('multilevel', 'pool'):
+                raise ValueError(f"Feature level '{self.feature_lv}' is not supported for CLIP visual backbone.")
+            return self.backbone(x)
 
         # Explicit levels from config
         if isinstance(self.levels, (list, tuple)) and len(self.levels) > 0:
