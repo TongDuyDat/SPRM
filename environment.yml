@@ -1,0 +1,22 @@
+name: hsprn
+channels:
+  - conda-forge
+  - pytorch
+  - nvidia
+dependencies:
+  - python=3.10
+  - pytorch>=1.7.1
+  - torchvision
+  - numpy
+  - scipy
+  - pillow
+  - pyyaml
+  - tqdm
+  - pip
+  - pip:
+    - timm
+    - transformers>=4.40,<5
+    - safetensors
+    - omegaconf
+    - ftfy
+    - regex

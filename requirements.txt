@@ -1,0 +1,14 @@
+torch>=1.7.1
+torchvision
+numpy
+scipy
+Pillow
+PyYAML
+tqdm
+timm
+transformers>=4.40,<5
+safetensors
+setuptools
+omegaconf
+ftfy
+regex
