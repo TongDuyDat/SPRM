@@ -1,0 +1,47 @@
+# AWA2 raw-image smoke test for the full Eq. (30)-(36) objective.
+# Uses a tiny subset to verify raw image + raw class-desc -> train -> eval.
+
+data:
+  dataset: "AWA2"
+  data_root: "./data"
+  mode: "image"
+  image_size: 224
+  image_preprocess: "imagenet"
+  batch_size: 4
+  num_workers: 0
+  subset_size: 50
+  eval_subset_size: 50
+  drop_last: false
+  semantic_source: "class_desc"
+  semantic_embedding_path: null
+  semantic_metadata_path: "./data_semantics/AWA2/class_descriptions_awa2.json"
+
+model:
+  vision:
+    backbone_type: "resnet101"
+    pretrained: false
+    levels: ["layer2", "layer3", "layer4"]
+  semantic:
+    backbone_type: "clip"
+    pretrained: true
+    clip_model: "./pre-trained/ViT-B-32.pt"
+    max_text_len: 77
+    input_dim: null
+    shared_dim: 512
+  aggregator:
+    level_dims: [512, 1024, 2048]
+    out_dim: 512
+  loss:
+    return_full_output: true
+    use_full: true
+    temperature: 0.07
+    lambda1: 1.0
+    lambda2: 0.1
+    lambda3: 0.1
+
+training:
+  epochs: 1
+  lr: 1.0e-4
+  scheduler: "none"
+  save_dir: "./checkpoints"
+  log_dir: "./logs"

@@ -1,0 +1,62 @@
+# AWA2 full raw-image training with the repo's ViT-B/32 visual backbone
+# and raw name_c/attr_c/hier_c/desc_c class descriptions.
+# This is not CLIP visual ViT; it uses the currently registered ViT backbone.
+
+data:
+  dataset: "AWA2"
+  data_root: "./data"
+  image_root: "./datasets"
+  mode: "image"
+  image_size: 224
+  image_preprocess: "imagenet"
+  batch_size: 16
+  num_workers: 4
+  subset_size: null
+  eval_subset_size: null
+  drop_last: false
+  semantic_source: "class_desc"
+  semantic_embedding_path: null
+  semantic_metadata_path: "./data_semantics/AWA2/class_descriptions_awa2.json"
+
+model:
+  vision:
+    freeze: true
+    backbone_type: "vit_base_patch32_224"
+    pretrained: true
+    levels: ["block_4", "block_8", "tokens_final"]
+  semantic:
+    freeze: true
+    backbone_type: "clip"
+    pretrained: true
+    clip_model: "./pre-trained/ViT-B-32.pt"
+    max_text_len: 77
+    input_dim: null
+    shared_dim: 512
+  aggregator:
+    level_dims: [768, 768, 768]
+    out_dim: 512
+  loss:
+    return_full_output: true
+    use_full: true
+    temperature: 0.07
+    lambda1: 1.0
+    lambda2: 0.1
+    lambda3: 0.1
+
+training:
+  epochs: 50
+  lr: 5.0e-5
+  weight_decay: 1.0e-4
+  optimizer: "adam"
+  scheduler: "cosine"
+  warmup_epochs: 5
+  seed: 42
+  eval_freq: 1
+  save_dir: "./checkpoints/awa2_image_vit_base_patch32_classdesc"
+  log_dir: "./logs/awa2_image_vit_base_patch32_classdesc"
+  amp: false
+
+eval:
+  mode: "both"
+
+feature_level: "multilevel"

@@ -1,0 +1,61 @@
+# SUN full raw-image training with torchvision ResNet-50 and raw
+# name_c/attr_c/hier_c/desc_c class descriptions.
+
+data:
+  dataset: "SUN"
+  data_root: "./data"
+  image_root: "./datasets"
+  mode: "image"
+  image_size: 224
+  image_preprocess: "imagenet"
+  batch_size: 32
+  num_workers: 4
+  subset_size: null
+  eval_subset_size: null
+  drop_last: false
+  semantic_source: "class_desc"
+  semantic_embedding_path: null
+  semantic_metadata_path: "./data_semantics/SUN/class_descriptions_sun.json"
+
+model:
+  vision:
+    freeze: true
+    backbone_type: "resnet50"
+    pretrained: true
+    levels: ["layer2", "layer3", "layer4"]
+  semantic:
+    freeze: true
+    backbone_type: "clip"
+    pretrained: true
+    clip_model: "./pre-trained/ViT-B-32.pt"
+    max_text_len: 77
+    input_dim: null
+    shared_dim: 512
+  aggregator:
+    level_dims: [512, 1024, 2048]
+    out_dim: 512
+  loss:
+    return_full_output: true
+    use_full: true
+    temperature: 0.07
+    lambda1: 1.0
+    lambda2: 0.1
+    lambda3: 0.1
+
+training:
+  epochs: 80
+  lr: 5.0e-5
+  weight_decay: 1.0e-4
+  optimizer: "adam"
+  scheduler: "cosine"
+  warmup_epochs: 5
+  seed: 42
+  eval_freq: 1
+  save_dir: "./checkpoints/sun_image_resnet50_classdesc"
+  log_dir: "./logs/sun_image_resnet50_classdesc"
+  amp: false
+
+eval:
+  mode: "both"
+
+feature_level: "multilevel"
