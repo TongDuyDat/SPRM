@@ -1,9 +1,10 @@
 """
 HSPRN Trainer — training loop with ZSL/GZSL evaluation.
 
-This trainer works with the pre-extracted feature pipeline (xlsa17).
+This trainer supports the xlsa17 feature pipeline and the raw-image pipeline.
 It handles:
-  - Training on seen-class features
+  - Training on seen-class images or features
+  - Semantic input from raw class-description records or cached tensors
   - Periodic ZSL and GZSL evaluation
   - Checkpointing (best H metric)
   - Learning rate scheduling
@@ -12,9 +13,8 @@ It handles:
 import os
 import time
 import torch
-import torch.nn as nn
-from torch.utils.data import DataLoader
-
+from torch.utils.data import DataLoader, Subset
+from tqdm import tqdm
 from tools.utils import AverageMeter, save_checkpoint, setup_logger
 from tools.evaluator import ZSLEvaluator
 
@@ -46,6 +46,27 @@ class Trainer:
         self.attribute = attribute.to(device)
         self.seen_classes = seen_classes
         self.unseen_classes = unseen_classes
+        self.num_total_classes = int(attribute.shape[0])
+
+        self.semantic_source = getattr(
+            getattr(cfg, "data", object()),
+            "semantic_source",
+            "attribute",
+        )
+        self.class_semantics = None
+        if self.semantic_source == "class_desc":
+            source_dataset = self._unwrap_dataset(train_dataset)
+            if not hasattr(source_dataset, "get_class_semantics"):
+                raise ValueError(
+                    "semantic_source='class_desc' requires a dataset with "
+                    "get_class_semantics()."
+                )
+            self.class_semantics = source_dataset.get_class_semantics()
+            if len(self.class_semantics) != self.num_total_classes:
+                raise ValueError(
+                    "Class semantic record count mismatch: got "
+                    f"{len(self.class_semantics)}, expected {self.num_total_classes}."
+                )
 
         # Data loaders
         bs = getattr(cfg.data, "batch_size", 64)
@@ -53,28 +74,32 @@ class Trainer:
 
         self.train_loader = DataLoader(
             train_dataset, batch_size=bs, shuffle=True,
-            num_workers=nw, pin_memory=True, drop_last=True,
+            num_workers=nw, pin_memory=device == "cuda",
+            drop_last=getattr(cfg.data, "drop_last", False),
         )
         self.test_seen_loader = DataLoader(
             test_seen_dataset, batch_size=bs * 2, shuffle=False,
-            num_workers=nw, pin_memory=True,
+            num_workers=nw, pin_memory=device == "cuda",
         )
         self.test_unseen_loader = DataLoader(
             test_unseen_dataset, batch_size=bs * 2, shuffle=False,
-            num_workers=nw, pin_memory=True,
+            num_workers=nw, pin_memory=device == "cuda",
         )
 
         # Optimizer
         lr = getattr(cfg.training, "lr", 1e-4)
         wd = getattr(cfg.training, "weight_decay", 1e-4)
         opt_name = getattr(cfg.training, "optimizer", "adam")
+        trainable_parameters = [param for param in model.parameters() if param.requires_grad]
+        if not trainable_parameters:
+            raise ValueError("Model has no trainable parameters after applying freeze settings.")
 
         if opt_name == "adamw":
-            self.optimizer = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=wd)
+            self.optimizer = torch.optim.AdamW(trainable_parameters, lr=lr, weight_decay=wd)
         elif opt_name == "sgd":
-            self.optimizer = torch.optim.SGD(model.parameters(), lr=lr, weight_decay=wd, momentum=0.9)
+            self.optimizer = torch.optim.SGD(trainable_parameters, lr=lr, weight_decay=wd, momentum=0.9)
         else:
-            self.optimizer = torch.optim.Adam(model.parameters(), lr=lr, weight_decay=wd)
+            self.optimizer = torch.optim.Adam(trainable_parameters, lr=lr, weight_decay=wd)
 
         # Scheduler
         epochs = getattr(cfg.training, "epochs", 50)
@@ -107,86 +132,109 @@ class Trainer:
         dataset_name = getattr(cfg.data, "dataset", "ZSL")
         self.logger = setup_logger(f"HSPRN-{dataset_name}", log_dir)
 
+    @staticmethod
+    def _unwrap_dataset(dataset):
+        while isinstance(dataset, Subset):
+            dataset = dataset.dataset
+        return dataset
+
     def _prepare_semantic_input(self, class_indices=None):
         """Prepare semantic input for the model.
 
-        Returns the class-level semantic tensor used by PriSematicConstructor.
-        This can be the XLSA17 attribute matrix or cached CLIP/BERT embeddings
-        produced offline by tools/extract_semantic_embeddings.py.
-
-        Override this method only if the semantic tensor is stored differently.
+        In class_desc mode this returns raw name_c/attr_c/hier_c/desc_c records
+        from the dataset loader. Otherwise it returns class-level tensors:
+        XLSA17 attributes or explicit cached semantic embeddings.
         """
+        if self.class_semantics is not None:
+            indices = (
+                range(len(self.class_semantics))
+                if class_indices is None else class_indices
+            )
+            return {
+                str(int(class_index)): self.class_semantics[int(class_index)]
+                for class_index in indices
+            }
+
         if class_indices is not None:
-            return self.attribute[class_indices]
-        return self.attribute
+            return {
+                str(int(class_index)): self.attribute[int(class_index)]
+                for class_index in class_indices
+            }
+        return {
+            str(class_index): self.attribute[class_index]
+            for class_index in range(self.attribute.shape[0])
+        }
 
     def train_one_epoch(self, epoch):
         """Train for one epoch on seen classes."""
         self.model.train()
         loss_meter = AverageMeter()
-        loss_cls_meter = AverageMeter()
+        component_meters = {}
 
-        for features, labels in self.train_loader:
+        label_map = {int(c): i for i, c in enumerate(self.seen_classes)}
+
+        progress = tqdm(
+            self.train_loader,
+            desc=f"Train {epoch}/{self.epochs}",
+            unit="batch",
+            dynamic_ncols=True,
+        )
+        for batch in progress:
+            features, labels = batch[:2]
             features = features.to(self.device)
             labels = labels.to(self.device)
-
-            # Get seen-class semantic embeddings as input
-            seen_attr = self._prepare_semantic_input(self.seen_classes)
-
-            # Forward: model expects (text_feature, vision_feature)
-            # For feature-based training, vision_feature is the pre-extracted feature
-            out = self.model(seen_attr, features)
-            if hasattr(out, 'scores'):
-                s_c = out.scores
-                # Optional full loss
-                if getattr(self.cfg.model.loss, 'use_full', False):
-                    total_loss, loss_dict = self.criterion(
-                        s_c, mapped_labels,
-                        v_tilde=out.v_embed,
-                        phi_t=out.phi_t,
-                        p_sem=out.p_sem,
-                        p_ref=out.p_ref,
-                        p_sem_unnorm=out.p_sem_unnorm,
-                    )
-                    loss = total_loss
-                else:
-                    tau = getattr(self.cfg.model.loss, "temperature", 0.07)
-                    loss = nn.functional.cross_entropy(s_c / tau, mapped_labels)
-            else:
-                s_c = out
-                tau = getattr(self.cfg.model.loss, "temperature", 0.07)
-                loss = nn.functional.cross_entropy(s_c / tau, mapped_labels)
-
-            # Remap labels to seen-class contiguous indices for cross-entropy
-            label_map = {int(c): i for i, c in enumerate(self.seen_classes)}
             mapped_labels = torch.tensor(
                 [label_map[int(l)] for l in labels.cpu()],
                 dtype=torch.long, device=self.device
             )
 
-            # Compute loss
-            # For simplicity, use cross-entropy on compatibility scores
-            tau = getattr(self.cfg.model.loss, "temperature", 0.07)
-            loss = nn.functional.cross_entropy(s_c / tau, mapped_labels)
+            # Get seen-class semantic embeddings as input
+            seen_attr = self._prepare_semantic_input(self.seen_classes)
+
+            # Forward: model expects (text_feature, vision_feature)
+            out = self.model(seen_attr, features)
+            if hasattr(out, 'scores'):
+                s_c = out.scores
+                loss, loss_dict = self.criterion(
+                    s_c, mapped_labels,
+                    v_tilde=out.v_embed,
+                    p_sem=out.p_sem,
+                    p_ref=out.p_ref,
+                )
+            else:
+                raise ValueError(
+                    "Full HSPRN objective requires model.loss.return_full_output=true "
+                    "so the trainer can access v_tilde, p_sem, and p_ref."
+                )
 
             self.optimizer.zero_grad()
             loss.backward()
             self.optimizer.step()
 
             loss_meter.update(loss.item(), features.size(0))
-            loss_cls_meter.update(loss.item(), features.size(0))
+            for name, value in loss_dict.items():
+                component_meters.setdefault(name, AverageMeter()).update(value, features.size(0))
+            progress.set_postfix(
+                loss=f"{loss_meter.avg:.4f}",
+                cls=f"{component_meters['loss_cls'].avg:.4f}",
+                align=f"{component_meters['loss_align'].avg:.4f}",
+                pres=f"{component_meters['loss_pres'].avg:.4f}",
+                lr=f"{self.optimizer.param_groups[0]['lr']:.2e}",
+                refresh=False,
+            )
 
         if self.scheduler is not None:
             self.scheduler.step()
 
-        return {
+        stats = {
             "loss": loss_meter.avg,
-            "loss_cls": loss_cls_meter.avg,
             "lr": self.optimizer.param_groups[0]["lr"],
         }
+        stats.update({name: meter.avg for name, meter in component_meters.items()})
+        return stats
 
     @torch.no_grad()
-    def _compute_scores(self, loader, class_indices):
+    def _compute_scores(self, loader, class_indices, description):
         """Compute compatibility scores for all samples in a loader.
 
         Args:
@@ -203,13 +251,21 @@ class Trainer:
         all_labels_list = []
 
         attr = self._prepare_semantic_input(class_indices)
-        num_total_classes = self.attribute.shape[0]
+        num_total_classes = self.num_total_classes
 
-        for features, labels in loader:
+        for batch in tqdm(
+            loader,
+            desc=description,
+            unit="batch",
+            dynamic_ncols=True,
+            leave=False,
+        ):
+            features, labels = batch[:2]
             features = features.to(self.device)
 
             # Model returns (B, len(class_indices)) scores
-            scores_subset = self.model(attr, features)
+            out = self.model(attr, features)
+            scores_subset = out.scores if hasattr(out, "scores") else out
 
             # Map back to full score matrix (B, C_total) with -inf for unscored
             scores_full = torch.full(
@@ -234,10 +290,10 @@ class Trainer:
 
         # GZSL: score all test samples against ALL classes
         scores_seen, labels_seen = self._compute_scores(
-            self.test_seen_loader, all_classes
+            self.test_seen_loader, all_classes, "Eval seen"
         )
         scores_unseen, labels_unseen = self._compute_scores(
-            self.test_unseen_loader, all_classes
+            self.test_unseen_loader, all_classes, "Eval unseen"
         )
 
         # ZSL: conventional — only unseen classes
