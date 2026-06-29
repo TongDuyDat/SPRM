@@ -5,6 +5,12 @@ data:
   dataset: "APY"
   batch_size: 64
 
+model:
+  semantic:
+    shared_dim: 64
+  aggregator:
+    out_dim: 64
+
 training:
   epochs: 50
   lr: 1.0e-4

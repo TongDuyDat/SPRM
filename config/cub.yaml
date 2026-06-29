@@ -5,6 +5,12 @@ data:
   dataset: "CUB"
   batch_size: 64
 
+model:
+  semantic:
+    shared_dim: 312
+  aggregator:
+    out_dim: 312
+
 training:
   epochs: 80
   lr: 5.0e-5

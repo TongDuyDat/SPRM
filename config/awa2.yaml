@@ -5,6 +5,12 @@ data:
   dataset: "AWA2"
   batch_size: 64
 
+model:
+  semantic:
+    shared_dim: 85
+  aggregator:
+    out_dim: 85
+
 training:
   epochs: 50
   lr: 1.0e-4
