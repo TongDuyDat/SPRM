@@ -101,3 +101,55 @@ class ZSLEvaluator:
             H = 2 * u * s / (u + s)
 
         return u, s, H
+
+    def _apply_calibration(self, scores, gamma):
+        """Subtract gamma from seen-class scores (calibrated stacking)."""
+        calibrated = scores.clone()
+        for c in self.seen_classes:
+            calibrated[:, int(c)] -= gamma
+        return calibrated
+
+    def eval_gzsl_calibrated(self, scores_seen, labels_seen,
+                             scores_unseen, labels_unseen,
+                             gamma_range=None):
+        """GZSL with calibrated stacking (Chao et al., TPAMI 2016).
+
+        Sweeps γ ∈ gamma_range and returns the best (u, s, H, γ).
+        At inference: ŷ = argmax_c [s_c − γ·𝟙(c ∈ Y^s)]
+
+        Args:
+            scores_seen: (N_s, C_total) scores for seen test samples.
+            labels_seen: (N_s,) labels for seen test samples.
+            scores_unseen: (N_u, C_total) scores for unseen test samples.
+            labels_unseen: (N_u,) labels for unseen test samples.
+            gamma_range: iterable of γ values to sweep. Default: 0.0 to 1.0 step 0.01.
+
+        Returns:
+            tuple: (best_u, best_s, best_H, best_gamma)
+        """
+        if gamma_range is None:
+            gamma_range = np.arange(0.0, 1.01, 0.01)
+
+        best_H = -1.0
+        best_u, best_s, best_gamma = 0.0, 0.0, 0.0
+
+        for gamma in gamma_range:
+            cal_seen = self._apply_calibration(scores_seen, gamma)
+            cal_unseen = self._apply_calibration(scores_unseen, gamma)
+
+            preds_seen = cal_seen.argmax(dim=1)
+            preds_unseen = cal_unseen.argmax(dim=1)
+
+            s = compute_per_class_acc(labels_seen, preds_seen, self.seen_classes)
+            u = compute_per_class_acc(labels_unseen, preds_unseen, self.unseen_classes)
+
+            H = 2 * u * s / (u + s) if (u + s) > 0 else 0.0
+
+            if H > best_H:
+                best_H = H
+                best_u = u
+                best_s = s
+                best_gamma = float(gamma)
+
+        return best_u, best_s, best_H, best_gamma
+

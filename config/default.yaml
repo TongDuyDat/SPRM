@@ -5,6 +5,8 @@
 
 data:
   dataset: "AWA2"
+  source: "legacy"              # legacy | prepared
+  prepared_root: "./prepared_datasets"
   data_root: "./data"            # root dir containing xlsa17 dataset folders
   image_root: "./datasets"       # root dir containing raw downloaded image datasets
   image_size: 224

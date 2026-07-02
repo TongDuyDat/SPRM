@@ -16,7 +16,7 @@ import torch
 from torch.utils.data import Subset
 
 from tools.utils import load_config, set_seed, setup_logger
-from datasets import build_zsl_splits
+from datasets import build_prepared_zsl_splits, build_zsl_splits
 from model.hsprn_model import HSPRN
 from losses import HSPRNLoss
 from trainer import Trainer
@@ -28,6 +28,8 @@ def parse_args():
                         help="Path to dataset-specific YAML config")
     parser.add_argument("--data_root", type=str, default=None,
                         help="Override data root directory")
+    parser.add_argument("--prepared_root", type=str, default=None,
+                        help="Use a self-contained prepared_datasets root")
     parser.add_argument("--device", type=str, default="cuda",
                         help="Device: cuda or cpu")
     parser.add_argument("--seed", type=int, default=None,
@@ -123,6 +125,9 @@ def main():
     # CLI overrides
     if args.data_root:
         cfg.data.data_root = args.data_root
+    if args.prepared_root:
+        cfg.data.source = "prepared"
+        cfg.data.prepared_root = args.prepared_root
     if args.seed is not None:
         cfg.training.seed = args.seed
     if args.semantic_embedding_path is not None:
@@ -154,10 +159,17 @@ def main():
     # Dataset
     dataset_name = cfg.data.dataset
     data_root = cfg.data.data_root
-    print(f"Loading dataset: {dataset_name} from {data_root}")
+    data_source = str(getattr(cfg.data, "source", "legacy")).lower()
+    prepared_root = getattr(cfg.data, "prepared_root", "./prepared_datasets")
+    if data_source not in {"legacy", "prepared"}:
+        raise ValueError("data.source must be 'legacy' or 'prepared'.")
+    source_root = prepared_root if data_source == "prepared" else data_root
+    print(f"Loading dataset: {dataset_name} from {source_root} ({data_source})")
 
     semantic_embedding_path = getattr(cfg.data, "semantic_embedding_path", None)
     semantic_metadata_path = getattr(cfg.data, "semantic_metadata_path", None)
+    if data_source == "prepared" and getattr(cfg.data, "semantic_source", "auto") == "auto":
+        cfg.data.semantic_source = "class_desc"
     semantic_source = resolve_semantic_source(cfg)
     cfg.data.semantic_source = semantic_source
     data_mode = getattr(cfg.data, "mode", "image")
@@ -171,17 +183,35 @@ def main():
     image_preprocess = getattr(cfg.data, "image_preprocess", None)
     if image_preprocess is None:
         image_preprocess = "clip" if "clip" in cfg.model.vision.backbone_type.lower() else "imagenet"
-    splits = build_zsl_splits(
-        data_root,
-        dataset_name,
-        semantic_embedding_path=semantic_embedding_path,
-        semantic_metadata_path=semantic_metadata_path,
-        require_full_semantics=True,
-        mode=data_mode,
-        image_root=getattr(cfg.data, "image_root", None),
-        image_size=getattr(cfg.data, "image_size", 224),
-        image_preprocess=image_preprocess,
-    )
+    if data_source == "prepared":
+        if data_mode != "image":
+            raise ValueError("Prepared dataset packages currently support data.mode='image' only.")
+        semantic_embedding_path = None
+        semantic_metadata_path = os.path.join(
+            prepared_root,
+            dataset_name,
+            "metadata",
+            "class_semantics.json",
+        )
+        splits = build_prepared_zsl_splits(
+            prepared_root,
+            dataset_name,
+            require_full_semantics=True,
+            image_size=getattr(cfg.data, "image_size", 224),
+            image_preprocess=image_preprocess,
+        )
+    else:
+        splits = build_zsl_splits(
+            data_root,
+            dataset_name,
+            semantic_embedding_path=semantic_embedding_path,
+            semantic_metadata_path=semantic_metadata_path,
+            require_full_semantics=True,
+            mode=data_mode,
+            image_root=getattr(cfg.data, "image_root", None),
+            image_size=getattr(cfg.data, "image_size", 224),
+            image_preprocess=image_preprocess,
+        )
     trainval = splits["trainval"]
     test_seen = splits["test_seen"]
     test_unseen = splits["test_unseen"]

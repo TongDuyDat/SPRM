@@ -59,7 +59,7 @@ class HSPRNLoss(nn.Module):
                 f"got {v_tilde.shape[-1]} and {p_sem.shape[-1]}."
             )
         p_sem_y = p_sem[y]
-        l_align = (1.0 - F.cosine_similarity(v_tilde, p_sem_y, dim=-1)).sum()
+        l_align = (1.0 - F.cosine_similarity(v_tilde, p_sem_y, dim=-1)).mean()
 
         # 3) Prototype preservation (Eq. 35)
         if p_ref.shape[-1] != p_sem.shape[-1]:
@@ -70,7 +70,7 @@ class HSPRNLoss(nn.Module):
         batch_indices = torch.arange(B, device=y.device)
         p_ref_y = p_ref[batch_indices, y]
         p_sem_y = p_sem[y]
-        l_pres = ((p_ref_y - p_sem_y) ** 2).sum(dim=-1).sum()
+        l_pres = ((p_ref_y - p_sem_y) ** 2).mean(dim=-1).mean()
 
         total_loss = (
             self.lambda1 * l_cls +

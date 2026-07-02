@@ -311,6 +311,46 @@ class Trainer:
             "gzsl_H": H * 100,
         }
 
+    def evaluate_calibrated(self):
+        """Run ZSL and GZSL evaluation with calibrated stacking.
+
+        Returns:
+            dict with keys: 'zsl_T1', 'gzsl_u', 'gzsl_s', 'gzsl_H',
+                            'cal_u', 'cal_s', 'cal_H', 'cal_gamma'
+        """
+        all_classes = self.evaluator.all_classes
+
+        scores_seen, labels_seen = self._compute_scores(
+            self.test_seen_loader, all_classes, "Eval seen"
+        )
+        scores_unseen, labels_unseen = self._compute_scores(
+            self.test_unseen_loader, all_classes, "Eval unseen"
+        )
+
+        # ZSL
+        zsl_T1 = self.evaluator.eval_zsl(scores_unseen, labels_unseen)
+
+        # GZSL (standard)
+        u, s, H = self.evaluator.eval_gzsl(
+            scores_seen, labels_seen, scores_unseen, labels_unseen
+        )
+
+        # GZSL (calibrated stacking)
+        cal_u, cal_s, cal_H, cal_gamma = self.evaluator.eval_gzsl_calibrated(
+            scores_seen, labels_seen, scores_unseen, labels_unseen
+        )
+
+        return {
+            "zsl_T1": zsl_T1 * 100,
+            "gzsl_u": u * 100,
+            "gzsl_s": s * 100,
+            "gzsl_H": H * 100,
+            "cal_u": cal_u * 100,
+            "cal_s": cal_s * 100,
+            "cal_H": cal_H * 100,
+            "cal_gamma": cal_gamma,
+        }
+
     def train(self):
         """Full training loop."""
         dataset_name = getattr(self.cfg.data, "dataset", "ZSL")
@@ -334,17 +374,21 @@ class Trainer:
             )
 
             if epoch % self.eval_freq == 0 or epoch == self.epochs:
-                eval_stats = self.evaluate()
+                eval_stats = self.evaluate_calibrated()
                 log_msg += (
                     f" | ZSL T1: {eval_stats['zsl_T1']:.1f}% "
                     f"| GZSL u: {eval_stats['gzsl_u']:.1f}% "
                     f"s: {eval_stats['gzsl_s']:.1f}% "
                     f"H: {eval_stats['gzsl_H']:.1f}%"
+                    f" | Cal u: {eval_stats['cal_u']:.1f}% "
+                    f"s: {eval_stats['cal_s']:.1f}% "
+                    f"H: {eval_stats['cal_H']:.1f}% "
+                    f"γ: {eval_stats['cal_gamma']:.2f}"
                 )
 
-                # Save best model by GZSL H
-                if eval_stats["gzsl_H"] > self.best_H:
-                    self.best_H = eval_stats["gzsl_H"]
+                # Save best model by calibrated GZSL H
+                if eval_stats["cal_H"] > self.best_H:
+                    self.best_H = eval_stats["cal_H"]
                     self.best_epoch = epoch
                     save_checkpoint(
                         {
@@ -361,7 +405,8 @@ class Trainer:
             self.logger.info(log_msg)
 
         self.logger.info(
-            f"=== Done. Best H: {self.best_H:.1f}% at epoch {self.best_epoch} ==="
+            f"=== Done. Best Cal H: {self.best_H:.1f}% at epoch {self.best_epoch} ==="
         )
 
         return self.best_H, self.best_epoch
+

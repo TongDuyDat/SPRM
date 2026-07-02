@@ -3,6 +3,8 @@
 
 data:
   dataset: "APY"
+  source: "prepared"
+  prepared_root: "./prepared_datasets"
   data_root: "./data"
   image_root: "./datasets"
   mode: "image"
@@ -15,7 +17,7 @@ data:
   drop_last: false
   semantic_source: "class_desc"
   semantic_embedding_path: null
-  semantic_metadata_path: "./data_semantics/APY/class_descriptions_apy.json"
+  semantic_metadata_path: null
 
 model:
   vision:
