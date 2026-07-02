@@ -54,3 +54,5 @@ Dưới đây là các kết quả ghi nhận được trên tập dữ liệu *
 ## 4. Hướng Dẫn Nhanh
 
 Xem chi tiết hướng dẫn chuẩn bị dữ liệu và lệnh huấn luyện tại [training_tutorial.md](training_tutorial.md).
+
+Tutorial cũng có quy trình tạo subset cân bằng 200 ảnh từ `prepared_datasets` và chạy random/grid search cho `lambda1`, `lambda2`, `lambda3` bằng `tools/build_lambda_search_subset.py`.

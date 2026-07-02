@@ -1,9 +1,9 @@
 #!/usr/bin/env python
-"""Build a small multi-dataset image subset and search HSPRN loss weights.
+"""Build a small prepared-dataset image subset and search HSPRN loss weights.
 
 The subset is represented as a YAML manifest of randomly sampled split indices.
 The search then trains each lambda candidate on the same manifest across
-AWA1, AWA2, CUB, SUN, and APY, and writes the best shared loss block to YAML.
+AWA2, CUB, SUN, and APY, and writes the best shared loss block to YAML.
 """
 
 import argparse
@@ -21,7 +21,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 
-DEFAULT_DATASETS = ("AWA1", "AWA2", "CUB", "SUN", "APY")
+DEFAULT_DATASETS = ("AWA2", "CUB", "SUN", "APY")
 SPLITS = ("trainval", "test_seen", "test_unseen")
 
 
@@ -71,18 +71,11 @@ def split_budget(dataset_budget, ratios):
     return dict(zip(SPLITS, counts))
 
 
-def default_metadata_path(root, dataset_name):
-    lower = dataset_name.lower()
-    return Path(root) / dataset_name / f"class_descriptions_{lower}.json"
-
-
-def resolve_metadata_path(args, dataset_name):
-    if args.semantic_metadata_template:
-        return Path(args.semantic_metadata_template.format(
-            dataset=dataset_name,
-            dataset_lower=dataset_name.lower(),
-        ))
-    return default_metadata_path(args.semantic_metadata_root, dataset_name)
+def resolve_package_dir(prepared_root, dataset_name):
+    root = Path(prepared_root).expanduser().resolve()
+    if root.name.upper() == dataset_name:
+        return root
+    return root / dataset_name
 
 
 def build_candidates(args):
@@ -126,7 +119,7 @@ def validate_image_subset(dataset, indices, dataset_name, split):
 def build_dataset_subsets(args, dataset_names):
     from torch.utils.data import Subset
 
-    from datasets import build_zsl_splits
+    from datasets import build_prepared_zsl_splits
 
     rng = random.Random(args.seed)
     per_dataset = distribute(args.total_size, len(dataset_names))
@@ -135,27 +128,27 @@ def build_dataset_subsets(args, dataset_names):
     manifest = {
         "seed": int(args.seed),
         "total_requested": int(args.total_size),
+        "source": "prepared",
+        "prepared_root": str(Path(args.prepared_root).expanduser().resolve()),
         "mode": "image",
         "required_semantic_fields": ["name_c", "attr_c", "hier_c", "desc_c"],
         "datasets": {},
     }
 
     for dataset_name, budget in zip(dataset_names, per_dataset):
-        metadata_path = resolve_metadata_path(args, dataset_name)
+        package_dir = resolve_package_dir(args.prepared_root, dataset_name)
+        metadata_path = package_dir / "metadata" / "class_semantics.json"
         if not metadata_path.exists():
             raise FileNotFoundError(
-                f"Missing class semantics for {dataset_name}: {metadata_path}. "
+                f"Missing prepared class semantics for {dataset_name}: {metadata_path}. "
                 "The lambda-search subset requires name_c/attr_c/hier_c/desc_c."
             )
 
         split_counts = split_budget(budget, ratios)
-        splits = build_zsl_splits(
-            args.data_root,
+        splits = build_prepared_zsl_splits(
+            args.prepared_root,
             dataset_name,
-            semantic_metadata_path=str(metadata_path),
             require_full_semantics=True,
-            mode="image",
-            image_root=args.image_root,
             image_size=args.image_size,
             image_preprocess=args.image_preprocess,
         )
@@ -176,11 +169,11 @@ def build_dataset_subsets(args, dataset_names):
         bundles[dataset_name] = {
             "splits": splits,
             "subsets": selected,
-            "semantic_metadata_path": str(metadata_path),
         }
         manifest["datasets"][dataset_name] = {
             "requested": int(budget),
             "actual": int(sum(item["actual"] for item in subset_manifest.values())),
+            "package_dir": str(package_dir),
             "semantic_metadata_path": str(metadata_path),
             "splits": subset_manifest,
         }
@@ -203,17 +196,17 @@ def ensure_loss_schema(cfg, candidate):
     loss_cfg.use_full = True
 
 
-def make_cfg(args, dataset_name, metadata_path, candidate, run_name):
+def make_cfg(args, dataset_name, candidate, run_name):
     from tools.utils import load_config
 
     cfg = load_config(args.template_config, default_path=args.default_config)
     cfg.data.dataset = dataset_name
-    cfg.data.data_root = args.data_root
-    cfg.data.image_root = args.image_root
+    cfg.data.source = "prepared"
+    cfg.data.prepared_root = str(Path(args.prepared_root).expanduser().resolve())
     cfg.data.mode = "image"
     cfg.data.semantic_source = "class_desc"
     cfg.data.semantic_embedding_path = None
-    cfg.data.semantic_metadata_path = metadata_path
+    cfg.data.semantic_metadata_path = None
     cfg.data.image_size = int(args.image_size)
     cfg.data.image_preprocess = args.image_preprocess
     cfg.data.subset_size = None
@@ -229,13 +222,18 @@ def make_cfg(args, dataset_name, metadata_path, candidate, run_name):
     cfg.training.save_dir = str(Path(args.work_dir) / "checkpoints" / run_name)
     cfg.training.log_dir = str(Path(args.work_dir) / "logs" / run_name)
 
+    if args.semantic_backbone is not None:
+        cfg.model.semantic.backbone_type = args.semantic_backbone
+    if args.semantic_pretrained_weights is not None:
+        cfg.model.semantic.pretrained_weights = args.semantic_pretrained_weights
+
     ensure_loss_schema(cfg, candidate)
     return cfg
 
 
 def metric_value(stats, metric):
     if metric == "mean":
-        return (float(stats["zsl_T1"]) + float(stats["gzsl_H"])) / 2.0
+        return (float(stats["zsl_T1"]) + float(stats["cal_H"])) / 2.0
     return float(stats[metric])
 
 
@@ -255,11 +253,11 @@ def run_dataset_candidate(args, dataset_name, bundle, candidate, candidate_idx):
     cfg = make_cfg(
         args,
         dataset_name,
-        bundle["semantic_metadata_path"],
         candidate,
         run_name,
     )
-    set_seed(args.seed + candidate_idx)
+    # Keep initialization and DataLoader order identical across candidates.
+    set_seed(args.seed)
 
     trainval = bundle["subsets"]["trainval"]
     test_seen = bundle["subsets"]["test_seen"]
@@ -288,7 +286,9 @@ def run_dataset_candidate(args, dataset_name, bundle, candidate, candidate_idx):
         device=device,
     )
     best_h, best_epoch = trainer.train()
-    stats = trainer.evaluate()
+    stats = trainer.last_eval_stats
+    if stats is None:
+        stats = trainer.evaluate_calibrated()
     stats = {key: float(value) for key, value in stats.items()}
     stats["best_H"] = float(best_h)
     stats["best_epoch"] = int(best_epoch)
@@ -301,9 +301,11 @@ def run_search(args, dataset_names, bundles, candidates):
     best = None
 
     for candidate_idx, candidate in enumerate(candidates, start=1):
+        print(f"Candidate {candidate_idx}/{len(candidates)}: {candidate}")
         dataset_results = {}
         scores = []
         for dataset_name in dataset_names:
+            print(f"  Dataset: {dataset_name}")
             stats = run_dataset_candidate(
                 args,
                 dataset_name,
@@ -337,21 +339,14 @@ def write_yaml(path, data):
 
 def parse_args():
     parser = argparse.ArgumentParser(
-        description="Build a 5-dataset image subset and search lambda1/lambda2/lambda3."
+        description=(
+            "Build a balanced image subset from four prepared datasets and search "
+            "lambda1/lambda2/lambda3."
+        )
     )
-    parser.add_argument("--data-root", default="./data")
-    parser.add_argument("--image-root", default="./datasets")
+    parser.add_argument("--prepared-root", default="./prepared_datasets")
     parser.add_argument("--datasets", default=",".join(DEFAULT_DATASETS))
-    parser.add_argument("--semantic-metadata-root", default="./data_semantics")
-    parser.add_argument(
-        "--semantic-metadata-template",
-        default=None,
-        help=(
-            "Optional format string, e.g. "
-            "'./data_semantics/{dataset}/class_descriptions_{dataset_lower}.json'."
-        ),
-    )
-    parser.add_argument("--template-config", default="config/awa2_image_resnet_smoke.yaml")
+    parser.add_argument("--template-config", default="config/awa2_image_resnet50_train.yaml")
     parser.add_argument("--default-config", default="config/default.yaml")
     parser.add_argument("--subset-file", default="lambda_search_subset.yaml")
     parser.add_argument("--output", default="lambda_search_result.yaml")
@@ -366,13 +361,29 @@ def parse_args():
     parser.add_argument("--eval-freq", type=int, default=1)
     parser.add_argument("--scheduler", default="none", choices=["none", "cosine", "step"])
     parser.add_argument("--device", default="cuda", choices=["cuda", "cpu"])
+    parser.add_argument(
+        "--semantic-backbone",
+        default=None,
+        choices=["clip", "tinyclip", "sbert", "bert"],
+        help="Optional text-backbone override for every search run.",
+    )
+    parser.add_argument(
+        "--semantic-pretrained-weights",
+        default=None,
+        help="Optional local text-only model path used with --semantic-backbone.",
+    )
     parser.add_argument("--seed", type=int, default=42)
-    parser.add_argument("--search", default="grid", choices=["grid", "random"])
+    parser.add_argument("--search", default="random", choices=["grid", "random"])
     parser.add_argument("--trials", type=int, default=12)
-    parser.add_argument("--lambda1-values", type=parse_float_list, default=[0.5, 1.0, 2.0])
-    parser.add_argument("--lambda2-values", type=parse_float_list, default=[0.01, 0.05, 0.1])
-    parser.add_argument("--lambda3-values", type=parse_float_list, default=[0.01, 0.05, 0.1])
-    parser.add_argument("--metric", default="mean", choices=["mean", "zsl_T1", "gzsl_H"])
+    parser.add_argument("--lambda1-values", type=parse_float_list, default=[0.5, 0.7, 1.0])
+    parser.add_argument("--lambda2-values", type=parse_float_list, default=[0.05, 0.1, 0.2])
+    parser.add_argument("--lambda3-values", type=parse_float_list, default=[0.05, 0.1, 0.2])
+    parser.add_argument(
+        "--metric",
+        default="mean",
+        choices=["mean", "zsl_T1", "gzsl_H", "cal_H"],
+        help="mean = average of ZSL T1 and calibrated GZSL H.",
+    )
     parser.add_argument(
         "--dry-run",
         action="store_true",
@@ -397,7 +408,19 @@ def main():
 
     result = {
         "subset_file": args.subset_file,
+        "data_source": "prepared",
+        "prepared_root": str(Path(args.prepared_root).expanduser().resolve()),
+        "datasets": dataset_names,
+        "loss_mapping": {
+            "lambda1": "L_cls",
+            "lambda2": "L_align",
+            "lambda3": "L_pres",
+        },
         "selection_metric": args.metric,
+        "selection_note": (
+            "This search tunes on sampled official evaluation splits. Treat its "
+            "scores as tuning diagnostics, not unbiased final test results."
+        ),
         "search": args.search,
         "candidates": candidates,
         "status": "dry_run" if args.dry_run else "completed",
@@ -410,10 +433,17 @@ def main():
         return
 
     best, all_results = run_search(args, dataset_names, bundles, candidates)
+    apply_to = []
+    for dataset_name in dataset_names:
+        pattern = f"{dataset_name.lower()}_image_*_train.yaml"
+        apply_to.extend(
+            str(path.relative_to(ROOT))
+            for path in sorted((ROOT / "config").glob(pattern))
+        )
     result.update({
-        "best": best,
+        "best": copy.deepcopy(best),
         "all_results": all_results,
-        "apply_to": [f"config/{name.lower()}.yaml" for name in dataset_names],
+        "apply_to": apply_to,
         "model.loss": {
             "lambda1": best["loss"]["lambda1"],
             "lambda2": best["loss"]["lambda2"],

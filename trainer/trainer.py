@@ -124,8 +124,9 @@ class Trainer:
         self.epochs = epochs
         self.eval_freq = getattr(cfg.training, "eval_freq", 1)
         self.save_dir = getattr(cfg.training, "save_dir", "./checkpoints")
-        self.best_H = 0.0
+        self.best_H = -1.0
         self.best_epoch = 0
+        self.last_eval_stats = None
 
         # Logger
         log_dir = getattr(cfg.training, "log_dir", "./logs")
@@ -375,6 +376,7 @@ class Trainer:
 
             if epoch % self.eval_freq == 0 or epoch == self.epochs:
                 eval_stats = self.evaluate_calibrated()
+                self.last_eval_stats = dict(eval_stats)
                 log_msg += (
                     f" | ZSL T1: {eval_stats['zsl_T1']:.1f}% "
                     f"| GZSL u: {eval_stats['gzsl_u']:.1f}% "
@@ -409,4 +411,3 @@ class Trainer:
         )
 
         return self.best_H, self.best_epoch
-

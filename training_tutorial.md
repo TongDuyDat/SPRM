@@ -131,3 +131,65 @@ $$\hat{y} = \arg\max_{c \in \mathcal{Y}^s \cup \mathcal{Y}^u} s_c - \gamma \cdot
 Hệ thống huấn luyện tự động quét giá trị $\gamma \in [0.0, 1.0]$ để tìm chỉ số Harmonic Mean ($H$) tối ưu nhất sau mỗi epoch đánh giá:
 - Chỉ số log hiển thị cả chuẩn thông thường và calibrated: `Cal u: XX% s: XX% H: XX% γ: X.XX`
 - Model checkpoint tốt nhất (`best.pth`) sẽ lưu lại dựa trên chỉ số **Calibrated H** cao nhất.
+
+---
+
+## 8. Tìm Bộ Lambda Trên Subset 200 Ảnh
+
+Loss huấn luyện hiện dùng ba thành phần:
+
+$$L = \lambda_1 L_{cls} + \lambda_2 L_{align} + \lambda_3 L_{pres}$$
+
+Trong đó `lambda1`, `lambda2`, `lambda3` lần lượt ứng với `L_cls`, `L_align`, `L_pres`. Tool `tools/build_lambda_search_subset.py` đọc trực tiếp bốn package AWA2, CUB, SUN và APY trong `prepared_datasets`; AWA1 chưa được dùng vì chưa có package ảnh hoàn chỉnh.
+
+### Kiểm tra subset trước khi search
+
+```bash
+PYTHONNOUSERSITE=1 /opt/conda/micromamba/envs/py310/bin/python \
+  tools/build_lambda_search_subset.py \
+  --prepared-root ./prepared_datasets \
+  --dry-run \
+  --subset-file lambda_search_subset.yaml \
+  --output lambda_search_result.yaml
+```
+
+Mặc định tool lấy 200 ảnh, chia đều 50 ảnh cho mỗi dataset và chia tiếp thành `30 trainval + 10 test_seen + 10 test_unseen`. Ảnh được mở thật để phát hiện file hỏng; semantic bắt buộc đủ `name_c/attr_c/hier_c/desc_c` và không fallback.
+
+### Chạy random search đề xuất
+
+```bash
+PYTHONNOUSERSITE=1 /opt/conda/micromamba/envs/py310/bin/python \
+  tools/build_lambda_search_subset.py \
+  --prepared-root ./prepared_datasets \
+  --semantic-backbone tinyclip \
+  --semantic-pretrained-weights ./pre-trained/text/tinyclip-text-3m \
+  --search random \
+  --trials 12 \
+  --epochs 1 \
+  --device cuda \
+  --subset-file lambda_search_subset.yaml \
+  --output lambda_search_result.yaml
+```
+
+Grid mặc định gồm:
+
+- `lambda1`: `0.5, 0.7, 1.0`;
+- `lambda2`: `0.05, 0.1, 0.2`;
+- `lambda3`: `0.05, 0.1, 0.2`.
+
+Random search lấy 12 trong 27 tổ hợp, không lặp. Dùng `--search grid` để chạy đủ 27 tổ hợp hoặc truyền grid riêng qua `--lambda1-values`, `--lambda2-values`, `--lambda3-values`. Mọi candidate dùng cùng ảnh, seed và thứ tự DataLoader để so sánh công bằng.
+
+Metric mặc định là trung bình của `ZSL T1` và calibrated `GZSL H`. Có thể chọn riêng bằng `--metric zsl_T1`, `--metric gzsl_H` hoặc `--metric cal_H`.
+
+### File đầu ra
+
+- `lambda_search_subset.yaml`: seed và index ảnh cố định của từng split/dataset.
+- `lambda_search_result.yaml`: score từng candidate trên từng dataset, candidate tốt nhất, block `model.loss` và danh sách config image train có thể nhận bộ lambda.
+- `lambda_search_runs/`: log và checkpoint tạm của từng candidate.
+
+Tool không tự sửa config. Chỉ áp block `model.loss` vào các config sau khi search chính thức hoàn tất và kết quả đã được review.
+
+> [!WARNING]
+> Search hiện dùng mẫu từ official `test_seen/test_unseen`, vì vậy score chỉ có ý nghĩa tuning diagnostic và không phải final test metric độc lập để công bố. Quy trình báo cáo cần một validation protocol riêng, chốt lambda trên validation, sau đó chỉ đánh giá official test một lần.
+
+Subset 200 ảnh giảm chi phí visual nhưng semantic constructor vẫn phải xử lý toàn bộ class; SUN với 645 seen và 72 unseen class thường là bộ chạy chậm nhất. Bộ lambda tìm bằng template ResNet-50 cũng cần được kiểm tra lại trước khi áp kết luận cho các họ backbone ViT hoặc CLIP-ViT.
