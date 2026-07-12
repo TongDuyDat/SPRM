@@ -3,8 +3,14 @@
 
 Run this once per dataset before training. The script writes raw text only:
 name_c is copied from the class list, while attr_c, hier_c, and desc_c are
-generated with three separate prompts. Encoding these three text samples is a
+generated with three separate prompts. Encoding these text samples is a
 training/semantic-encoding concern; no LLM call belongs in the training loop.
+
+CLIP's text encoder accepts at most 77 tokens per text sample (including the
+special tokens <|startoftext|> and <|endoftext|>). Each list item is encoded
+independently, so the 77-token budget applies per item — not shared across the
+whole list. Prompts ask the LLM for self-contained items of at most ~50 English
+words (~75 content tokens at ~1.3 BPE tokens/word after reserving SOT/EOT).
 """
 
 import argparse
@@ -22,9 +28,27 @@ from typing import Any
 from tqdm import tqdm
 
 PROMPTS = {
-    "attr_c": "What are useful visual features for distinguishing a {class_name} in a photo?",
-    "hier_c": "Generate a list of 10 types of the following {class_name}.",
-    "desc_c": "Please make a list of possible backgrounds where a {class_name} appears in a photo.",
+    "attr_c": (
+        "List 10 distinct visual features useful for recognizing a {class_name} "
+        "in a photo. Each item must be one self-contained phrase or short sentence "
+        "that makes sense on its own (do not rely on other lines for context), "
+        "at most about 50 English words. One item per line, no numbering, "
+        "no preamble or extra explanation."
+    ),
+    "hier_c": (
+        "List 10 specific subtypes, breeds, or closely related kinds of "
+        "{class_name}. Each item must be one self-contained name or short "
+        "description that stands alone (do not refer to other lines), at most "
+        "about 50 English words. One item per line, no numbering, no preamble "
+        "or extra explanation."
+    ),
+    "desc_c": (
+        "List 10 backgrounds or settings where a {class_name} commonly appears "
+        "in a photo. Each item must be one self-contained phrase or short "
+        "sentence that makes sense on its own (do not rely on other lines for "
+        "context), at most about 50 English words. One item per line, no "
+        "numbering, no preamble or extra explanation."
+    ),
 }
 PROMPT_CLASS_ALIASES = {
     "monkey": "a non-human primate animal from the simian group",

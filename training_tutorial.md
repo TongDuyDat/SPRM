@@ -42,6 +42,19 @@ HSPRN/
 
 Config image đặt `data.source: prepared` và `data.prepared_root: ./prepared_datasets`. Loader kiểm tra manifest, split order, class count, đủ bốn trường semantic và đường dẫn ảnh tương đối trong package.
 
+### Attribute names và nguồn công bố
+
+`metadata/attribute_names.json` phải có cùng số phần tử và cùng thứ tự cột với `metadata/attributes.npy`. Package hiện dùng các nguồn sau:
+
+| Dataset | Số attribute | Nguồn tên theo dataset |
+|---|---:|---|
+| AWA2 | 85 | `Animals_with_Attributes2/predicates.txt` từ AwA2 release |
+| CUB | 312 | `attributes.txt` ở root archive `CUB_200_2011.tgz` |
+| SUN | 102 | biến `attributes` trong `SUNAttributeDB/attributes.mat` |
+| APY | 64 | `attribute_data/attribute_names.txt` từ annotation archive chính thức |
+
+Nguồn APY 64 tên được lưu nguyên thứ tự tại `tools/dataset_metadata/apy_attribute_names.txt`; provenance và SHA-256 của archive nằm trong `tools/dataset_metadata/README.md`. `PreparedZSLDataset` sẽ raise nếu số tên không bằng số cột attribute, thay vì fallback sang tên của dataset khác.
+
 ---
 
 ## 3. Sinh Dữ Liệu Ngữ Nghĩa (Class Descriptions)
@@ -131,6 +144,23 @@ $$\hat{y} = \arg\max_{c \in \mathcal{Y}^s \cup \mathcal{Y}^u} s_c - \gamma \cdot
 Hệ thống huấn luyện tự động quét giá trị $\gamma \in [0.0, 1.0]$ để tìm chỉ số Harmonic Mean ($H$) tối ưu nhất sau mỗi epoch đánh giá:
 - Chỉ số log hiển thị cả chuẩn thông thường và calibrated: `Cal u: XX% s: XX% H: XX% γ: X.XX`
 - Model checkpoint tốt nhất (`best.pth`) sẽ lưu lại dựa trên chỉ số **Calibrated H** cao nhất.
+
+Evaluation nhận hai nhánh input giống training: tensor ảnh raw và semantic bank của các class ứng viên. ZSL giới hạn dự đoán trong unseen classes; GZSL dùng toàn bộ seen và unseen classes. Label chỉ dùng để tính metric, không đi vào `model.forward()`.
+
+Ví dụ đánh giá checkpoint TinyCLIP trên package AWA2:
+
+```bash
+PYTHONNOUSERSITE=1 /opt/conda/micromamba/envs/py310/bin/python eval.py \
+  --config config/awa2_image_resnet50_train.yaml \
+  --ckpt /path/to/checkpoints/AWA2/best.pth \
+  --prepared_root ./prepared_datasets \
+  --semantic_backbone tinyclip \
+  --semantic_pretrained_weights ./pre-trained/text/tinyclip-text-3m \
+  --num_workers 0 \
+  --device cuda
+```
+
+`--semantic_backbone` và `--semantic_pretrained_weights` phải khớp kiến trúc đã dùng khi tạo checkpoint. Có thể thêm `--eval_subset_size 10` để smoke-test loader/model trước khi đánh giá toàn bộ split.
 
 ---
 

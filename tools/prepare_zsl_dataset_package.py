@@ -25,6 +25,7 @@ import yaml
 SUPPORTED_DATASETS = ("AWA1", "AWA2", "CUB", "SUN", "APY")
 SPLITS = ("trainval", "test_seen", "test_unseen")
 IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".bmp"}
+TOOL_METADATA_DIR = Path(__file__).resolve().parent / "dataset_metadata"
 
 
 def normalize_dataset_name(dataset_name):
@@ -81,6 +82,22 @@ def read_indexed_text_file(path):
             else:
                 value = line
             values.append(value.replace("+", " ").replace("_", " "))
+    return values
+
+
+def read_attribute_name_file(path):
+    """Read published attribute labels without normalizing their identifiers."""
+    path = Path(path)
+    if not path.is_file():
+        return None
+    values = []
+    with path.open("r", encoding="utf-8", errors="ignore") as handle:
+        for line in handle:
+            line = line.strip()
+            if not line:
+                continue
+            parts = line.split(maxsplit=1)
+            values.append(parts[1] if len(parts) == 2 and parts[0].isdigit() else line)
     return values
 
 
@@ -244,22 +261,64 @@ def load_class_names(dataset_dir, att_splits, image_root, dataset_name, num_clas
     return [f"{dataset_name.lower()}_class_{i}" for i in range(num_classes)]
 
 
-def load_attribute_names(dataset_dir, image_root):
-    candidates = [
-        dataset_dir / "predicates.txt",
-        dataset_dir / "attributes.txt",
-        dataset_dir / "Animals_with_Attributes2" / "predicates.txt",
-        dataset_dir / "Animals_with_Attributes" / "predicates.txt",
-        image_root / "Animals_with_Attributes1" / "predicates.txt",
-        image_root / "Animals_with_Attributes2" / "predicates.txt",
-        image_root / "attributes.txt",
-        image_root / "CUB_200_2011" / "attributes" / "attributes.txt",
-    ]
-    for path in candidates:
-        values = read_indexed_text_file(path)
-        if values:
-            return values
-    return None
+def load_attribute_names(dataset_dir, image_root, dataset_name, num_attributes):
+    """Load names from the matching dataset release and verify column count."""
+    dataset_name = normalize_dataset_name(dataset_name)
+    text_candidates = {
+        "AWA1": [
+            dataset_dir / "predicates.txt",
+            dataset_dir / "Animals_with_Attributes" / "predicates.txt",
+            image_root / "Animals_with_Attributes1" / "predicates.txt",
+            image_root / "Animals_with_Attributes1" / "Animals_with_Attributes2" / "predicates.txt",
+        ],
+        "AWA2": [
+            dataset_dir / "predicates.txt",
+            dataset_dir / "Animals_with_Attributes2" / "predicates.txt",
+            image_root / "Animals_with_Attributes2" / "predicates.txt",
+        ],
+        "CUB": [
+            dataset_dir / "attributes.txt",
+            image_root / "CUB_200_2011" / "attributes" / "attributes.txt",
+            image_root / "attributes.txt",
+        ],
+        "APY": [
+            dataset_dir / "attribute_names.txt",
+            TOOL_METADATA_DIR / "apy_attribute_names.txt",
+        ],
+        "SUN": [],
+    }
+    invalid_sources = []
+    for path in text_candidates[dataset_name]:
+        values = read_attribute_name_file(path)
+        if values is None:
+            continue
+        if len(values) == int(num_attributes):
+            return values, relpath_or_abs(path, [Path.cwd()])
+        invalid_sources.append(f"{path} ({len(values)} names)")
+
+    if dataset_name == "SUN":
+        mat_candidates = [
+            dataset_dir / "attributes.mat",
+            image_root / "SUNAttributeDB" / "SUNAttributeDB" / "attributes.mat",
+        ]
+        for path in mat_candidates:
+            if not path.is_file():
+                continue
+            data = load_mat(path)
+            raw_attributes = data.get("attributes")
+            if raw_attributes is None:
+                invalid_sources.append(f"{path} (missing 'attributes' variable)")
+                continue
+            values = [matlab_to_string(value) for value in raw_attributes.squeeze()]
+            if len(values) == int(num_attributes):
+                return values, relpath_or_abs(path, [Path.cwd()])
+            invalid_sources.append(f"{path} ({len(values)} names)")
+
+    details = "; ".join(invalid_sources) if invalid_sources else "no source file found"
+    raise FileNotFoundError(
+        f"Could not load {num_attributes} published attribute names for {dataset_name}: "
+        f"{details}."
+    )
 
 
 def image_roots(data_root, dataset_dir, dataset_name, image_root):
@@ -606,7 +665,12 @@ def build_dataset_package(args, dataset_name):
     image_files = res101["image_files"].squeeze()
     attribute_raw = att_splits["att"].T.astype(np.float32)
     class_names = load_class_names(dataset_dir, att_splits, image_root, dataset_name, attribute_raw.shape[0])
-    attribute_names = load_attribute_names(dataset_dir, image_root)
+    attribute_names, attribute_names_source = load_attribute_names(
+        dataset_dir,
+        image_root,
+        dataset_name,
+        attribute_raw.shape[1],
+    )
     roots = image_roots(data_root, dataset_dir, dataset_name, image_root)
     existing_paths = build_existing_image_set(
         image_index_roots(data_root, dataset_dir, dataset_name, image_root)
@@ -734,6 +798,7 @@ def build_dataset_package(args, dataset_name):
         "splits": {split: len(ids) for split, ids in split_records.items()},
         "semantic_metadata_path": str(semantic_path) if semantic_path.exists() else None,
         "has_semantic_metadata": semantics is not None,
+        "attribute_names_source": attribute_names_source,
         "files": {
             "manifest": "manifest.yaml",
             "classes": "metadata/classes.json",
