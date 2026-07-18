@@ -12,6 +12,13 @@ Command-line --data_root overrides data.data_root in the config.
 import argparse
 import os
 import sys
+from pathlib import Path
+
+# Prefer local package over HuggingFace `datasets` if both exist.
+_ROOT = Path(__file__).resolve().parent
+if str(_ROOT) not in sys.path:
+    sys.path.insert(0, str(_ROOT))
+
 import torch
 from torch.utils.data import Subset
 

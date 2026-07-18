@@ -18,7 +18,9 @@ data/
 */*.gif
 */*.pdf
 */*.mp4
-datasets/
+# Raw dumps under datasets/ — keep Python package sources (*.py)
+datasets/*
+!datasets/*.py
 checkpoints/
 logs/
 pre-trained/

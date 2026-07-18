@@ -8,6 +8,14 @@ Usage:
 
 import argparse
 import os
+import sys
+from pathlib import Path
+
+# Prefer local package over HuggingFace `datasets` if both exist.
+_ROOT = Path(__file__).resolve().parent
+if str(_ROOT) not in sys.path:
+    sys.path.insert(0, str(_ROOT))
+
 import torch
 
 from tools.utils import load_config, set_seed, load_checkpoint
