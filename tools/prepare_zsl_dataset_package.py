@@ -580,7 +580,19 @@ def semantic_metadata_path(args, dataset_name):
             dataset=dataset_name,
             dataset_lower=dataset_name.lower(),
         ))
-    return Path(args.semantic_metadata_root) / dataset_name / f"class_descriptions_{dataset_name.lower()}.json"
+    # Plan 3 default: after-LLM file (never the legacy class_descriptions_<ds>.json).
+    use_after_llm = getattr(args, "use_after_llm_semantics", True)
+    if use_after_llm:
+        return (
+            Path(args.semantic_metadata_root)
+            / dataset_name
+            / f"class_descriptions_{dataset_name.lower()}_after_llm.json"
+        )
+    return (
+        Path(args.semantic_metadata_root)
+        / dataset_name
+        / f"class_descriptions_{dataset_name.lower()}.json"
+    )
 
 
 def canonical_semantics(semantic_records, class_names, require_full):
@@ -623,6 +635,18 @@ def generate_semantic_metadata(args, dataset_name):
         int(att_splits["att"].shape[1]),
     )
     output_path = semantic_metadata_path(args, dataset_name)
+    try:
+        from tools.semantic_policy import is_legacy_class_descriptions_path
+    except ModuleNotFoundError:
+        from semantic_policy import is_legacy_class_descriptions_path
+
+    # Always write generated descriptions to the after-LLM path (safe by default).
+    if is_legacy_class_descriptions_path(output_path):
+        raise ValueError(
+            f"Refusing to generate into legacy path {output_path}. "
+            "Use class_descriptions_<ds>_after_llm.json."
+        )
+
     generation_args = SimpleNamespace(
         api_base=args.api_base or generator.DEFAULT_API_BASE,
         api_key=args.api_key or generator.DEFAULT_API_KEY,
@@ -633,6 +657,10 @@ def generate_semantic_metadata(args, dataset_name):
         request_delay=args.request_delay,
         timeout=args.timeout,
         workers=args.description_workers,
+        on_overflow=getattr(args, "on_overflow", "skip_item"),
+        max_clip_tokens=getattr(args, "max_clip_tokens", 77),
+        skip_token_validate=False,
+        force_overwrite_legacy=False,
     )
     failed = generator.generate_descriptions(generation_args, class_names, output_path)
     if failed:
@@ -798,6 +826,11 @@ def build_dataset_package(args, dataset_name):
         "splits": {split: len(ids) for split, ids in split_records.items()},
         "semantic_metadata_path": str(semantic_path) if semantic_path.exists() else None,
         "has_semantic_metadata": semantics is not None,
+        "semantics_mode": (
+            "after_llm"
+            if semantics is not None and getattr(args, "use_after_llm_semantics", True)
+            else ("legacy" if semantics is not None else None)
+        ),
         "attribute_names_source": attribute_names_source,
         "files": {
             "manifest": "manifest.yaml",
@@ -808,9 +841,16 @@ def build_dataset_package(args, dataset_name):
             "images": "metadata/images.jsonl",
             "missing_images": "metadata/missing_images.jsonl",
             "class_semantics": "metadata/class_semantics.json" if semantics is not None else None,
+            "class_descriptions_after_llm": (
+                f"metadata/class_descriptions_{dataset_name.lower()}_after_llm.json"
+                if semantics is not None and getattr(args, "use_after_llm_semantics", True)
+                else None
+            ),
+            # Legacy copy path is only written when explicitly using legacy semantics.
             "class_descriptions": (
                 f"metadata/class_descriptions_{dataset_name.lower()}.json"
-                if semantics is not None else None
+                if semantics is not None and not getattr(args, "use_after_llm_semantics", True)
+                else None
             ),
         },
     }
@@ -827,10 +867,17 @@ def build_dataset_package(args, dataset_name):
         np.save(metadata_dir / "attributes.npy", attribute_raw)
         if semantics is not None:
             write_json(metadata_dir / "class_semantics.json", semantics)
-            write_json(
-                metadata_dir / f"class_descriptions_{dataset_name.lower()}.json",
-                semantics,
-            )
+            if getattr(args, "use_after_llm_semantics", True):
+                # Write after-LLM copy only; do not overwrite legacy package file.
+                write_json(
+                    metadata_dir / f"class_descriptions_{dataset_name.lower()}_after_llm.json",
+                    semantics,
+                )
+            else:
+                write_json(
+                    metadata_dir / f"class_descriptions_{dataset_name.lower()}.json",
+                    semantics,
+                )
 
     return summary
 
@@ -859,10 +906,28 @@ def parse_args():
     parser.add_argument(
         "--semantic-metadata-template",
         default=None,
-        help="Format string, e.g. './data_semantics/{dataset}/class_descriptions_{dataset_lower}.json'.",
+        help=(
+            "Format string for semantics JSON. Plan 3 default without template: "
+            "./data_semantics/{dataset}/class_descriptions_{dataset_lower}_after_llm.json"
+        ),
+    )
+    parser.add_argument(
+        "--use-legacy-semantics",
+        action="store_true",
+        help=(
+            "Read/write legacy class_descriptions_<ds>.json instead of "
+            "class_descriptions_<ds>_after_llm.json (not recommended for Plan 3)."
+        ),
     )
     parser.add_argument("--generate-descriptions", action="store_true")
     parser.add_argument("--description-workers", type=int, default=2)
+    parser.add_argument(
+        "--on-overflow",
+        default="skip_item",
+        choices=["skip_item", "reject_class"],
+        help="Token overflow policy when generating descriptions.",
+    )
+    parser.add_argument("--max-clip-tokens", type=int, default=77)
     parser.add_argument("--api-base", default=None)
     parser.add_argument("--api-key", default=None)
     parser.add_argument("--model", default=None)
@@ -876,6 +941,8 @@ def parse_args():
         parser.error("--description-workers must be at least 1.")
     if args.copy_workers < 1:
         parser.error("--copy-workers must be at least 1.")
+    # True by default: Plan 3 after-LLM files.
+    args.use_after_llm_semantics = not bool(args.use_legacy_semantics)
     return args
 
 

@@ -11,6 +11,12 @@ import os
 import torch
 
 from tools.utils import load_config, set_seed, load_checkpoint
+from tools.semantic_policy import (
+    assert_full_after_llm_semantics,
+    configure_semantic_input,
+    resolve_semantic_source,
+    unify_after_llm_enabled,
+)
 from datasets import build_prepared_zsl_splits, build_zsl_splits
 from model.hsprn_model import HSPRN
 from tools.evaluator import ZSLEvaluator
@@ -44,53 +50,6 @@ def maybe_subset(dataset, size):
     if size is None:
         return dataset
     return Subset(dataset, range(min(int(size), len(dataset))))
-
-
-def resolve_semantic_source(cfg):
-    data_cfg = cfg.data
-    source = getattr(data_cfg, "semantic_source", "auto")
-    if source is None:
-        source = "auto"
-    source = str(source).lower()
-    if source == "auto":
-        if getattr(data_cfg, "semantic_embedding_path", None):
-            return "embedding"
-        if getattr(data_cfg, "semantic_metadata_path", None):
-            return "class_desc"
-        return "attribute"
-    allowed = {"attribute", "embedding", "class_desc"}
-    if source not in allowed:
-        raise ValueError(
-            f"Unknown data.semantic_source={source!r}. Expected one of {sorted(allowed)}."
-        )
-    return source
-
-
-def configure_semantic_input(cfg, attribute, semantic_source):
-    semantic_cfg = cfg.model.semantic
-    if semantic_source == "class_desc":
-        backbone_type = getattr(semantic_cfg, "backbone_type", "embedding")
-        if backbone_type in {"attribute", "identity", "embedding"}:
-            raise ValueError(
-                "semantic_source='class_desc' requires a text semantic backbone "
-                "such as 'clip' or 'bert', not backbone_type='embedding'."
-            )
-        if getattr(semantic_cfg, "input_dim", None) is not None:
-            raise ValueError(
-                "semantic_source='class_desc' must keep model.semantic.input_dim null. "
-                "Raw name_c/attr_c/hier_c/desc_c records are encoded by the text backbone."
-            )
-        shared_dim = getattr(semantic_cfg, "shared_dim", None)
-        out_dim = getattr(cfg.model.aggregator, "out_dim", None)
-        if shared_dim != out_dim:
-            raise ValueError(
-                "Full HSPRN evaluation requires model.semantic.shared_dim == "
-                "model.aggregator.out_dim. Got "
-                f"shared_dim={shared_dim}, out_dim={out_dim}."
-            )
-        return
-
-    cfg.model.semantic.input_dim = int(attribute.shape[1])
 
 
 def semantic_input(attribute, class_semantics, class_indices, device):
@@ -226,6 +185,12 @@ def main():
     class_semantics = None
     if semantic_source == "class_desc":
         class_semantics = test_seen.get_class_semantics()
+        if unify_after_llm_enabled(cfg):
+            assert_full_after_llm_semantics(
+                class_semantics,
+                num_total_classes=int(attribute.shape[0]),
+                context="eval class_semantics",
+            )
 
     eval_subset_size = getattr(cfg.data, "eval_subset_size", None)
     test_seen = maybe_subset(test_seen, eval_subset_size)
@@ -241,6 +206,8 @@ def main():
         print(f"  Semantic dim: {attribute.shape[1]} ({semantic_embedding_path})")
     else:
         print(f"  Semantic dim: {attribute.shape[1]} (class attributes)")
+    if unify_after_llm_enabled(cfg):
+        print("  Plan 3 unify_after_llm: ON (force class_desc, same encode as train)")
 
     bs = getattr(cfg.data, "batch_size", 64) * 2
     nw = getattr(cfg.data, "num_workers", 4)

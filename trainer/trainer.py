@@ -67,6 +67,16 @@ class Trainer:
                     "Class semantic record count mismatch: got "
                     f"{len(self.class_semantics)}, expected {self.num_total_classes}."
                 )
+            # Plan 3: hard-fail incomplete after-LLM fields when unify is on.
+            experiment = getattr(cfg, "experiment", None)
+            if experiment is not None and bool(getattr(experiment, "unify_after_llm", False)):
+                from tools.semantic_policy import assert_full_after_llm_semantics
+
+                assert_full_after_llm_semantics(
+                    self.class_semantics,
+                    num_total_classes=self.num_total_classes,
+                    context="trainer class_semantics",
+                )
 
         # Data loaders
         bs = getattr(cfg.data, "batch_size", 64)

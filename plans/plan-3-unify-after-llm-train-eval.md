@@ -1,8 +1,8 @@
 # Plan 3 — Unify After-LLM Semantics for Both Train and Eval
 
-**Trạng thái:** kế hoạch triển khai để review. **Không** implement code trong bước này.  
-**Nhánh git đề xuất (sau khi review):** `feat/plan-3-unify-after-llm`  
-**Nguồn:** hướng **mới**, **chưa** formal hóa trong `docs/research.md`. Plan này **hình thức hóa trước**, rồi mới liệt kê bước code.
+**Trạng thái:** đang triển khai trên `labs/after-llm`.  
+**Constraint bổ sung:** LLM after-LLM ghi `data_semantics/*/class_descriptions_*_after_llm.json` — **không** ghi đè `class_descriptions_*.json` legacy.  
+**Nguồn:** hướng **mới**, **chưa** formal hóa trong `docs/research.md`.
 
 ---
 

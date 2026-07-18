@@ -59,16 +59,33 @@ Nguồn APY 64 tên được lưu nguyên thứ tự tại `tools/dataset_metada
 
 ## 3. Sinh Dữ Liệu Ngữ Nghĩa (Class Descriptions)
 
-Mô hình HSPRN yêu cầu 4 trường ngữ nghĩa cho mỗi lớp: `name_c` (tên lớp), `attr_c` (thuộc tính), `hier_c` (quan hệ phân cấp), và `desc_c` (mô tả ngữ cảnh). Chúng ta sinh offline thông qua kịch bản gọi LLM API:
+Mô hình HSPRN yêu cầu 4 trường ngữ nghĩa cho mỗi lớp: `name_c` (tên lớp), `attr_c` (thuộc tính), `hier_c` (quan hệ phân cấp), và `desc_c` (mô tả ngữ cảnh). Chúng ta sinh offline thông qua kịch bản gọi LLM API.
+
+**Plan 3:** output after-LLM ghi file **riêng** `class_descriptions_<ds>_after_llm.json`. **Không** ghi đè file legacy `data_semantics/*/class_descriptions_*.json`.
 
 ```bash
+# Default output: data_semantics/CUB/class_descriptions_cub_after_llm.json
+python tools/generate_descriptions.py \
+  --dataset CUB
+
+# Explicit path (recommended style):
 python tools/generate_descriptions.py \
   --dataset CUB \
-  --classes_file data/CUB/classes.txt \
-  --output data_semantics/CUB/class_descriptions_cub.json
+  --output data_semantics/CUB/class_descriptions_cub_after_llm.json
 ```
 
-*Lưu ý:* Công cụ có cơ chế resume-safe, tự động bỏ qua các lớp đã được sinh hoàn chỉnh nếu tiến trình bị gián đoạn.
+Mỗi field `attr_c` / `hier_c` / `desc_c` được parse thành **list** các câu ngắn; item vượt quá 77 token CLIP bị bỏ (`--on-overflow skip_item`).
+
+Audit completeness + token budget:
+
+```bash
+python tools/audit_class_semantics.py \
+  --dataset CUB \
+  --semantics data_semantics/CUB/class_descriptions_cub_after_llm.json \
+  --fail-on-overflow
+```
+
+*Lưu ý:* Công cụ có cơ chế resume-safe trên file `_after_llm.json`. Legacy `class_descriptions_cub.json` giữ nguyên để so sánh / backup.
 
 ---
 
@@ -78,7 +95,7 @@ Pipeline mặc định mã hóa raw class descriptions bằng text encoder trong
 
 ```bash
 python tools/extract_semantic_embeddings.py \
-  --metadata data_semantics/CUB/class_descriptions_cub.json \
+  --metadata data_semantics/CUB/class_descriptions_cub_after_llm.json \
   --encoder clip \
   --output data_semantics/CUB/clip_text_embeddings.pt
 ```
@@ -90,6 +107,9 @@ python tools/extract_semantic_embeddings.py \
 Công cụ `prepare_zsl_dataset_package.py` tạo package tự chứa dùng trực tiếp cho training:
 
 ```bash
+# Plan 3: package đọc class_descriptions_cub_after_llm.json (default),
+# ghi metadata/class_semantics.json + class_descriptions_cub_after_llm.json
+# (không ghi đè legacy class_descriptions_cub.json trong package nếu đã có).
 python tools/prepare_zsl_dataset_package.py \
   --datasets CUB \
   --data-root ./data \
@@ -113,6 +133,28 @@ Mô hình sẽ nhận trực tiếp đường dẫn ảnh gốc, nạp qua visua
 ```bash
 PYTHONNOUSERSITE=1 python train.py \
   --config config/cub_image_resnet50_train.yaml \
+  --device cuda
+```
+
+### Plan 3 — Unify after-LLM train + eval
+Dùng cùng `class_desc` after-LLM cho train và eval (`experiment.unify_after_llm: true`, `model.semantic.itemwise_pool: true`). Không train class_desc rồi eval attribute-only.
+
+```bash
+# 1) Sinh after-LLM (file riêng)
+python tools/generate_descriptions.py --dataset CUB
+
+# 2) Rebuild package metadata từ after_llm
+python tools/prepare_zsl_dataset_package.py \
+  --datasets CUB --action manifest --require-full-semantics
+
+# 3) Train + eval cùng protocol
+PYTHONNOUSERSITE=1 python train.py \
+  --config config/cub_image_clip_vit_b16_unify_after_llm.yaml \
+  --device cuda
+
+PYTHONNOUSERSITE=1 python eval.py \
+  --config config/cub_image_clip_vit_b16_unify_after_llm.yaml \
+  --ckpt checkpoints/cub_image_clip_vit_b16_unify_after_llm/CUB/best.pth \
   --device cuda
 ```
 

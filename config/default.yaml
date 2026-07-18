@@ -25,9 +25,15 @@ data:
   # the semantic tensor path.
   semantic_embedding_path: null
   # JSON with raw name_c/attr_c/hier_c/desc_c records, produced by
-  # tools/generate_descriptions.py. This is the class_desc path.
-  # Can point directly to class_descriptions_<dataset>.json from tools/generate_descriptions.py.
+  # tools/generate_descriptions.py. Plan 3 prefers
+  # data_semantics/<DS>/class_descriptions_<ds>_after_llm.json (never overwrite legacy).
   semantic_metadata_path: null
+
+# Experiment-level protocol flags (Plan 3, etc.)
+experiment:
+  # When true: force semantic_source=class_desc for train+eval, require full
+  # after-LLM fields for every class (seen+unseen), prefer itemwise pool encode.
+  unify_after_llm: false
 
 model:
   vision:
@@ -49,6 +55,8 @@ model:
     input_dim: null
     text_dim: 768
     shared_dim: 85
+    # Plan 3: encode list items separately + mean-pool (avoids CLIP 77-token join).
+    itemwise_pool: false
   aggregator:
     input_dim: 2048
     dim_l: 768

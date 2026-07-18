@@ -11,12 +11,18 @@ special tokens <|startoftext|> and <|endoftext|>). Each list item is encoded
 independently, so the 77-token budget applies per item — not shared across the
 whole list. Prompts ask the LLM for self-contained items of at most ~50 English
 words (~75 content tokens at ~1.3 BPE tokens/word after reserving SOT/EOT).
+
+Plan 3: write after-LLM output to a **separate** file
+``data_semantics/<DATASET>/class_descriptions_<ds>_after_llm.json``.
+Never overwrite legacy ``class_descriptions_<ds>.json`` unless
+``--force-overwrite-legacy`` is set explicitly.
 """
 
 import argparse
 import contextlib
 import json
 import os
+import re
 import signal
 import sys
 import time
@@ -26,6 +32,10 @@ from concurrent.futures import ProcessPoolExecutor, as_completed
 from pathlib import Path
 from typing import Any
 from tqdm import tqdm
+
+_REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
 
 PROMPTS = {
     "attr_c": (
@@ -97,6 +107,26 @@ def load_config(path: str | None) -> dict[str, Any]:
         return json.load(f) or {}
 
 
+def default_after_llm_output(dataset: str, semantic_root: str = "./data_semantics") -> Path:
+    ds = str(dataset).strip()
+    return Path(semantic_root) / ds.upper() / f"class_descriptions_{ds.lower()}_after_llm.json"
+
+
+def assert_safe_output_path(path: Path, force_overwrite_legacy: bool = False) -> None:
+    """Refuse to write legacy class_descriptions_<ds>.json unless forced."""
+    try:
+        from tools.semantic_policy import is_legacy_class_descriptions_path
+    except ModuleNotFoundError:
+        from semantic_policy import is_legacy_class_descriptions_path
+
+    if is_legacy_class_descriptions_path(path) and not force_overwrite_legacy:
+        raise ValueError(
+            f"Refusing to overwrite legacy semantics file: {path}\n"
+            "Plan 3 writes after-LLM data to class_descriptions_<ds>_after_llm.json.\n"
+            "Pass a different --output, or --force-overwrite-legacy only if intentional."
+        )
+
+
 def parse_args():
     parser = argparse.ArgumentParser(
         description="Generate raw name_c/attr_c/hier_c/desc_c text for one dataset."
@@ -109,8 +139,39 @@ def parse_args():
                              "If omitted, names are read from data/<DATASET>/att_splits.mat.")
     parser.add_argument("--data_root", default=None,
                         help="XLSA17 metadata root used when --classes_file is omitted.")
-    parser.add_argument("--output", default=None,
-                        help="Output JSON path. Default: class_descriptions_<dataset>.json")
+    parser.add_argument(
+        "--semantic_root",
+        default=None,
+        help="Root for default after-LLM output (default: ./data_semantics).",
+    )
+    parser.add_argument(
+        "--output",
+        default=None,
+        help="Output JSON path. Default: "
+             "data_semantics/<DATASET>/class_descriptions_<ds>_after_llm.json",
+    )
+    parser.add_argument(
+        "--force-overwrite-legacy",
+        action="store_true",
+        help="Allow writing to legacy class_descriptions_<ds>.json (discouraged).",
+    )
+    parser.add_argument(
+        "--on-overflow",
+        default=None,
+        choices=["skip_item", "reject_class"],
+        help="Policy when an item exceeds CLIP 77 tokens (default: skip_item).",
+    )
+    parser.add_argument(
+        "--max-clip-tokens",
+        type=int,
+        default=None,
+        help="CLIP token budget per item (default: 77).",
+    )
+    parser.add_argument(
+        "--skip-token-validate",
+        action="store_true",
+        help="Skip CLIP token validation after parse (not recommended).",
+    )
     parser.add_argument("--api_base", default=None)
     parser.add_argument("--api_key", default=None)
     parser.add_argument("--model", default=None)
@@ -134,7 +195,10 @@ def parse_args():
         ("dataset", None),
         ("classes_file", None),
         ("data_root", "./data"),
+        ("semantic_root", "./data_semantics"),
         ("output", None),
+        ("on_overflow", "skip_item"),
+        ("max_clip_tokens", 77),
         ("api_base", DEFAULT_API_BASE),
         ("api_key", DEFAULT_API_KEY),
         ("model", DEFAULT_MODEL),
@@ -145,7 +209,7 @@ def parse_args():
         ("timeout", 120.0),
         ("workers", 1),
     ):
-        value = getattr(args, key)
+        value = getattr(args, key, None)
         if value is None:
             setattr(args, key, cfg.get(key, default))
 
@@ -156,6 +220,8 @@ def parse_args():
             parser.error("--workers must be at least 1.")
         if args.max_new_classes is not None and args.max_new_classes < 1:
             parser.error("--max_new_classes must be at least 1.")
+        if not args.output:
+            args.output = str(default_after_llm_output(args.dataset, args.semantic_root))
     return args
 
 
@@ -228,11 +294,76 @@ def write_output(path: Path, data: dict[str, Any]) -> None:
     os.replace(tmp_path, path)
 
 
+_BULLET_RE = re.compile(r"^\s*(?:[-*•]|\d+[\.\)])\s+")
+
+
+def parse_items(text: str) -> list[str]:
+    """Split LLM response into clean self-contained list items."""
+    if not text or not str(text).strip():
+        return []
+    items: list[str] = []
+    for raw_line in str(text).splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+        # Drop common chatty preambles / follow-ups.
+        lower = line.lower()
+        if lower.startswith("if you want") or lower.startswith("sure —") or lower.startswith("sure -"):
+            continue
+        if lower.startswith("here") and ("list" in lower or "background" in lower):
+            continue
+        line = _BULLET_RE.sub("", line).strip()
+        line = line.strip("`\"'")
+        if not line:
+            continue
+        items.append(line)
+    # Fallback: whole block as one item if no newlines produced anything.
+    if not items:
+        compact = " ".join(str(text).split())
+        if compact:
+            items = [compact]
+    return items
+
+
+def _field_nonempty(value: Any) -> bool:
+    if isinstance(value, str):
+        return bool(value.strip())
+    if isinstance(value, (list, tuple)):
+        return any(str(item).strip() for item in value)
+    return value is not None and bool(str(value).strip())
+
+
 def complete_entry(entry: Any) -> bool:
+    """True when name_c and three fields have usable content (list or non-empty str)."""
     if not isinstance(entry, dict):
         return False
-    required = ("name_c", "attr_c", "hier_c", "desc_c")
-    return all(isinstance(entry.get(key), str) and entry[key].strip() for key in required)
+    if not isinstance(entry.get("name_c"), str) or not entry["name_c"].strip():
+        return False
+    for key in ("attr_c", "hier_c", "desc_c"):
+        if not _field_nonempty(entry.get(key)):
+            return False
+    return True
+
+
+def validate_and_filter_items(
+    items: list[str],
+    *,
+    max_clip_tokens: int = 77,
+    on_overflow: str = "skip_item",
+    skip_token_validate: bool = False,
+) -> list[str]:
+    if skip_token_validate:
+        return [item for item in items if item.strip()]
+    try:
+        from tools.clip_token_budget import filter_items_by_budget
+    except ModuleNotFoundError:
+        from clip_token_budget import filter_items_by_budget
+
+    return filter_items_by_budget(
+        items,
+        max_tokens=max_clip_tokens,
+        on_overflow=on_overflow,
+    )
 
 
 def request_body(model: str, prompt: str, max_tokens: int) -> bytes:
@@ -393,19 +524,39 @@ def call_with_retry(args, prompt: str) -> str:
     raise RuntimeError(f"LLM SSE request failed after {args.retries} attempts: {last_error}")
 
 
-def generate_for_class(args, class_name: str) -> dict[str, str]:
-    entry = {"name_c": class_name}
+def generate_for_class(args, class_name: str) -> dict[str, Any]:
+    entry: dict[str, Any] = {"name_c": class_name}
     prompt_class_name = PROMPT_CLASS_ALIASES.get(class_name.lower(), class_name)
+    on_overflow = getattr(args, "on_overflow", "skip_item") or "skip_item"
+    max_clip_tokens = int(getattr(args, "max_clip_tokens", 77) or 77)
+    skip_token_validate = bool(getattr(args, "skip_token_validate", False))
+
     for field, template in PROMPTS.items():
         prompt = template.format(class_name=prompt_class_name)
         print(f"[generate] {class_name}::{field}", file=sys.stderr, flush=True)
-        entry[field] = call_with_retry(args, prompt)
+        raw = call_with_retry(args, prompt)
+        items = parse_items(raw)
+        items = validate_and_filter_items(
+            items,
+            max_clip_tokens=max_clip_tokens,
+            on_overflow=on_overflow,
+            skip_token_validate=skip_token_validate,
+        )
+        if not items:
+            raise ValueError(
+                f"{class_name}::{field}: no items remaining after parse/token filter."
+            )
+        entry[field] = items
         if args.request_delay > 0:
             time.sleep(args.request_delay)
     return entry
 
 
 def generate_descriptions(args, classes: list[str], output_path: Path) -> list[str]:
+    assert_safe_output_path(
+        output_path,
+        force_overwrite_legacy=bool(getattr(args, "force_overwrite_legacy", False)),
+    )
     data = load_output(output_path)
     all_pending = [name for name in classes if not complete_entry(data.get(name))]
     pending = all_pending
@@ -467,7 +618,11 @@ def main():
         if args.classes_file
         else load_xlsa_classes(args.data_root, args.dataset)
     )
-    output_path = Path(args.output or f"class_descriptions_{args.dataset}.json")
+    output_path = Path(
+        args.output
+        or default_after_llm_output(args.dataset, getattr(args, "semantic_root", "./data_semantics"))
+    )
+    assert_safe_output_path(output_path, bool(getattr(args, "force_overwrite_legacy", False)))
     failed = generate_descriptions(args, classes, output_path)
     final_data = load_output(output_path)
     completed = sum(
