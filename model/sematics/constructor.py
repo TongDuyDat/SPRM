@@ -117,13 +117,45 @@ class PriSematicConstructor(nn.Module):
         """Encode one or more strings → (N, D) float tensor on encoder device."""
         if not texts:
             raise ValueError("Cannot encode empty text list.")
-        if len(texts) == 1:
-            out = self.encoder(texts[0])
-        else:
-            out = self.encoder(list(texts))
-        if out.dim() == 1:
-            out = out.unsqueeze(0)
-        return out
+
+        def _run():
+            if len(texts) == 1:
+                out = self.encoder(texts[0])
+            else:
+                out = self.encoder(list(texts))
+            if out.dim() == 1:
+                out = out.unsqueeze(0)
+            return out
+
+        # Frozen text encoder: no graph (and safe for one-shot class-phi cache).
+        if self.freeze_encoder:
+            with torch.no_grad():
+                return _run()
+        return _run()
+
+    @torch.no_grad()
+    def encode_class_phi(self, records: Sequence[dict]) -> torch.Tensor:
+        """Encode a list of t_c dicts → (C, D) phi_t (no Ws).
+
+        Used by the trainer to cache frozen text embeddings once per run.
+        """
+        if not records:
+            raise ValueError("encode_class_phi requires a non-empty record list.")
+        was_training = self.training
+        self.eval()
+        phis = []
+        for record in records:
+            if not isinstance(record, dict):
+                raise TypeError(
+                    f"encode_class_phi expects dict records, got {type(record)}"
+                )
+            phi = self._encode_record(record)
+            if phi.dim() != 1:
+                phi = phi.reshape(-1)
+            phis.append(phi.detach())
+        if was_training:
+            self.train(True)
+        return torch.stack(phis, dim=0)
 
     def _encode_mean(self, texts: Sequence[str]) -> torch.Tensor:
         emb = self._encode_texts(list(texts))

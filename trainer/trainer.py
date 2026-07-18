@@ -143,19 +143,89 @@ class Trainer:
         dataset_name = getattr(cfg.data, "dataset", "ZSL")
         self.logger = setup_logger(f"HSPRN-{dataset_name}", log_dir)
 
+        # Frozen text encoder: encode class semantics once → reuse every batch.
+        # Cache stores phi_t (pre-Ws); Ws stays trainable and still runs per step.
+        self._phi_cache = None
+        self._maybe_build_frozen_phi_cache()
+
     @staticmethod
     def _unwrap_dataset(dataset):
         while isinstance(dataset, Subset):
             dataset = dataset.dataset
         return dataset
 
+    def _semantic_encoder_is_frozen(self) -> bool:
+        semantic_cfg = getattr(getattr(self.cfg, "model", object()), "semantic", None)
+        if semantic_cfg is not None and hasattr(semantic_cfg, "freeze"):
+            return bool(semantic_cfg.freeze)
+        psc = getattr(self.model, "psc", None)
+        return bool(getattr(psc, "freeze_encoder", False))
+
+    def _maybe_build_frozen_phi_cache(self):
+        """One-shot CLIP/text encode for all classes when the text tower is frozen."""
+        if self.class_semantics is None:
+            return
+        if not self._semantic_encoder_is_frozen():
+            self.logger.info(
+                "Semantic encoder is trainable — skip phi cache "
+                "(encode class_desc every batch)."
+            )
+            return
+        psc = getattr(self.model, "psc", None)
+        if psc is None or not hasattr(psc, "encode_class_phi"):
+            self.logger.warning(
+                "Model has no psc.encode_class_phi; cannot cache frozen semantics."
+            )
+            return
+
+        n_cls = len(self.class_semantics)
+        self.logger.info(
+            f"Caching frozen semantic phi_t for {n_cls} classes "
+            f"(itemwise={bool(getattr(psc, 'itemwise_pool', False))}) …"
+        )
+        t0 = time.time()
+        # encode_class_phi is @torch.no_grad; keep model in train() for heads after.
+        was_training = self.model.training
+        self.model.eval()
+        phi = psc.encode_class_phi(self.class_semantics)
+        if not torch.is_tensor(phi) or phi.dim() != 2:
+            raise RuntimeError(
+                f"encode_class_phi must return (C, D) tensor, got {type(phi)} "
+                f"shape={getattr(phi, 'shape', None)}"
+            )
+        if int(phi.shape[0]) != n_cls:
+            raise RuntimeError(
+                f"phi cache class count mismatch: got {phi.shape[0]}, expected {n_cls}"
+            )
+        self._phi_cache = phi.detach().to(self.device, non_blocking=True)
+        if was_training:
+            self.model.train()
+        elapsed = time.time() - t0
+        self.logger.info(
+            f"Cached phi_t shape={tuple(self._phi_cache.shape)} "
+            f"device={self._phi_cache.device} in {elapsed:.1f}s "
+            f"(reused every train/eval batch)."
+        )
+
     def _prepare_semantic_input(self, class_indices=None):
         """Prepare semantic input for the model.
 
-        In class_desc mode this returns raw name_c/attr_c/hier_c/desc_c records
-        from the dataset loader. Otherwise it returns class-level tensors:
-        XLSA17 attributes or explicit cached semantic embeddings.
+        When a frozen phi cache exists, returns per-class tensors (skips CLIP).
+        In class_desc mode without cache, returns raw name_c/attr_c/hier_c/desc_c
+        records. Otherwise returns XLSA17 attributes or cached embeddings.
         """
+        if self._phi_cache is not None:
+            indices = (
+                range(self._phi_cache.shape[0])
+                if class_indices is None
+                else class_indices
+            )
+            # Dict of tensors → PriSematicConstructor uses phi as-is, then Ws.
+            return {
+                str(int(class_index)): self._phi_cache[int(class_index)]
+                for class_index in indices
+            }
+
         if self.class_semantics is not None:
             indices = (
                 range(len(self.class_semantics))

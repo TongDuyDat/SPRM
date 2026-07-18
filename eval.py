@@ -65,7 +65,16 @@ def maybe_subset(dataset, size):
     return Subset(dataset, range(min(int(size), len(dataset))))
 
 
-def semantic_input(attribute, class_semantics, class_indices, device):
+def semantic_input(attribute, class_semantics, class_indices, device, phi_cache=None):
+    """Build model text input for class_indices.
+
+    phi_cache: optional (C, D) frozen CLIP phi_t — skips re-encoding class_desc.
+    """
+    if phi_cache is not None:
+        return {
+            str(int(class_index)): phi_cache[int(class_index)]
+            for class_index in class_indices
+        }
     if class_semantics is not None:
         return {
             str(int(class_index)): class_semantics[int(class_index)]
@@ -86,13 +95,16 @@ def compute_all_scores(
     class_indices,
     num_total_classes,
     device,
+    phi_cache=None,
 ):
     """Compute compatibility scores for all samples against given classes."""
     model.eval()
     all_scores = []
     all_labels = []
 
-    attr = semantic_input(attribute, class_semantics, class_indices, device)
+    attr = semantic_input(
+        attribute, class_semantics, class_indices, device, phi_cache=phi_cache
+    )
 
     for batch in loader:
         features, labels = batch[:2]
@@ -238,6 +250,17 @@ def main():
     ckpt = load_checkpoint(args.ckpt, model)
     print(f"Loaded checkpoint from epoch {ckpt.get('epoch', '?')}")
 
+    # Frozen text encoder: encode class_desc once (same as trainer cache).
+    phi_cache = None
+    semantic_freeze = bool(getattr(cfg.model.semantic, "freeze", False))
+    if class_semantics is not None and semantic_freeze and hasattr(model.psc, "encode_class_phi"):
+        print(
+            f"Caching frozen semantic phi_t for {len(class_semantics)} classes …"
+        )
+        model.eval()
+        phi_cache = model.psc.encode_class_phi(class_semantics).to(device)
+        print(f"  cached phi_t shape={tuple(phi_cache.shape)}")
+
     # Evaluate
     evaluator = ZSLEvaluator(seen_classes, unseen_classes)
     num_total = attribute.shape[0]
@@ -246,11 +269,11 @@ def main():
     all_cls = list(range(num_total))
     scores_seen_gzsl, labels_seen_gzsl = compute_all_scores(
         model, test_seen_loader, attribute, class_semantics,
-        all_cls, num_total, device
+        all_cls, num_total, device, phi_cache=phi_cache,
     )
     scores_unseen_gzsl, labels_unseen_gzsl = compute_all_scores(
         model, test_unseen_loader, attribute, class_semantics,
-        all_cls, num_total, device
+        all_cls, num_total, device, phi_cache=phi_cache,
     )
     zsl_T1 = evaluator.eval_zsl(scores_unseen_gzsl, labels_unseen_gzsl) * 100
     u, s, H = evaluator.eval_gzsl(
