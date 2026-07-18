@@ -14,7 +14,6 @@ import os
 import sys
 from pathlib import Path
 
-# Prefer local package over HuggingFace `datasets` if both exist.
 _ROOT = Path(__file__).resolve().parent
 if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
@@ -22,6 +21,7 @@ if str(_ROOT) not in sys.path:
 import torch
 from torch.utils.data import Subset
 
+from tools.local_pkg import import_local_datasets
 from tools.utils import load_config, set_seed, setup_logger
 from tools.semantic_policy import (
     assert_full_after_llm_semantics,
@@ -29,7 +29,12 @@ from tools.semantic_policy import (
     resolve_semantic_source,
     unify_after_llm_enabled,
 )
-from datasets import build_prepared_zsl_splits, build_zsl_splits
+
+# Force local package (avoids HuggingFace `datasets` name clash on Colab).
+_ds = import_local_datasets()
+build_prepared_zsl_splits = _ds.build_prepared_zsl_splits
+build_zsl_splits = _ds.build_zsl_splits
+
 from model.hsprn_model import HSPRN
 from losses import HSPRNLoss
 from trainer import Trainer
