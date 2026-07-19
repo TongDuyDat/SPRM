@@ -1,0 +1,81 @@
+# Trial A — chống seen-bias / overfit CE (sau run baseline Cal H 46.9% @ep27).
+# Baseline: cub_image_resnet101_unify_after_llm.yaml
+#
+# Thay đổi chính vs baseline:
+#   temperature 0.07 → 0.12   (softmax mềm hơn)
+#   lambda2 0.1 → 0.5         (siết visual–semantic align)
+#   lambda3 0.1 → 0.5         (pres gần 0 trên log → tăng trọng số)
+#   lr 5e-5 → 3e-5            (bớt overfit seen muộn)
+#   weight_decay 1e-4 → 2e-4
+#   epochs 80 → 50            (best Cal H sớm ~ep27; không cần 100)
+#   batch_size 24 → 64        (Colab T4 ổn; có thể 128 nếu VRAM dư)
+#   num_workers 4 → 2         (Colab thường 2 vCPU)
+#
+# Chạy:
+#   python train.py --config config/cub_image_resnet101_unify_after_llm_tryA.yaml \
+#     --prepared_root ./prepared_datasets --device cuda --num_workers 2
+
+data:
+  dataset: "CUB"
+  source: "prepared"
+  prepared_root: "./prepared_datasets"
+  data_root: "./data"
+  image_root: "./datasets"
+  mode: "image"
+  image_size: 224
+  image_preprocess: "imagenet"
+  batch_size: 64
+  num_workers: 2
+  subset_size: null
+  eval_subset_size: null
+  drop_last: false
+  semantic_source: "class_desc"
+  semantic_embedding_path: null
+  semantic_metadata_path: null
+
+experiment:
+  unify_after_llm: true
+
+model:
+  vision:
+    freeze: true
+    backbone_type: "resnet101"
+    pretrained: true
+    levels: ["layer2", "layer3", "layer4"]
+  semantic:
+    freeze: true
+    backbone_type: "clip"
+    pretrained: true
+    clip_model: "./pre-trained/ViT-B-32.pt"
+    max_text_len: 77
+    input_dim: null
+    shared_dim: 512
+    itemwise_pool: true
+  aggregator:
+    level_dims: [512, 1024, 2048]
+    out_dim: 512
+  loss:
+    return_full_output: true
+    use_full: true
+    temperature: 0.12
+    lambda1: 1.0
+    lambda2: 0.5
+    lambda3: 0.5
+
+training:
+  epochs: 50
+  lr: 3.0e-5
+  weight_decay: 2.0e-4
+  optimizer: "adamw"
+  scheduler: "cosine"
+  warmup_epochs: 5
+  seed: 42
+  eval_freq: 1
+  save_dir: "./checkpoints/cub_image_resnet101_unify_after_llm_tryA"
+  log_dir: "./logs/cub_image_resnet101_unify_after_llm_tryA"
+  amp: false
+
+eval:
+  mode: "both"
+
+feature_level: "multilevel"
