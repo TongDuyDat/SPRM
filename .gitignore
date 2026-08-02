@@ -27,3 +27,5 @@ pre-trained/
 prepared_datasets/
 data_semantics/
 .mimocode/
+ai_memory
+*.gz
