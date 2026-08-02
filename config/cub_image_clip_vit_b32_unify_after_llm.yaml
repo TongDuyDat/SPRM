@@ -1,0 +1,78 @@
+# CLIP vision ViT-B/32 + CLIP text ViT-B/32, Plan 3 semantics (unify after LLM),
+# loss tryD (nce align + pres all/cosine). Thí nghiệm kiểm tra kênh alignment:
+# tryD dùng ResNet-101 feature -> MFA -> CLIP text space đạt ZSL ~51%, u ~12%;
+# nếu bottleneck là alignment giữa hai không gian, đổi vision sang CLIP (cùng
+# phân bố với text tower) phải cải thiện rõ.
+#
+# Chạy:
+#   python train.py --config config/cub_image_clip_vit_b32_unify_after_llm.yaml \
+#     --prepared_root ./prepared_datasets --device cuda --num_workers 2
+
+data:
+  dataset: "CUB"
+  source: "prepared"
+  prepared_root: "./prepared_datasets"
+  data_root: "./data"
+  image_root: "./datasets"
+  mode: "image"
+  image_size: 224
+  image_preprocess: "clip"
+  batch_size: 64
+  num_workers: 2
+  subset_size: null
+  eval_subset_size: null
+  drop_last: false
+  semantic_source: "class_desc"
+  semantic_embedding_path: null
+  semantic_metadata_path: null
+
+experiment:
+  unify_after_llm: true
+
+model:
+  vision:
+    freeze: true
+    backbone_type: "clip_vit_b32"
+    clip_model: "./pre-trained/ViT-B-32.pt"
+    pretrained: true
+    levels: null
+  semantic:
+    freeze: true
+    backbone_type: "clip"
+    pretrained: true
+    clip_model: "./pre-trained/ViT-B-32.pt"
+    max_text_len: 77
+    input_dim: null
+    shared_dim: 512
+    itemwise_pool: true
+  aggregator:
+    input_dim: 512
+    out_dim: 512
+  loss:
+    return_full_output: true
+    use_full: true
+    temperature: 0.12
+    lambda1: 0.75
+    lambda2: 0.5
+    lambda3: 1.0
+    align_mode: "nce"
+    pres_target: "all"
+    pres_mode: "cosine"
+
+training:
+  epochs: 50
+  lr: 3.0e-5
+  weight_decay: 2.0e-4
+  optimizer: "adamw"
+  scheduler: "cosine"
+  warmup_epochs: 5
+  seed: 42
+  eval_freq: 1
+  save_dir: "./checkpoints/cub_image_clip_vit_b32_unify_after_llm"
+  log_dir: "./logs/cub_image_clip_vit_b32_unify_after_llm"
+  amp: false
+
+eval:
+  mode: "both"
+
+feature_level: "pool"
