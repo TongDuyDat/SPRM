@@ -68,6 +68,13 @@ model:
     lambda1: 1.0   # L_cls
     lambda2: 0.1   # L_align
     lambda3: 0.1   # L_pres
+    # "cosine" = paper Eq. (34) (GT only); "nce" = softmax over all seen
+    # classes so L_align has real discriminative gradient.
+    align_mode: "cosine"
+    # "gt" = paper Eq. (35) (GT row only); "all" = every class prototype.
+    pres_target: "gt"
+    # "mse" = paper Eq. (35); "cosine" = scale-invariant on unit vectors.
+    pres_mode: "mse"
     # API flags
     return_full_output: true   # model.forward returns HSPRNOutput
     use_full: true             # trainer uses Eq. (32), (34)-(36)

@@ -24,6 +24,22 @@ class HSPRNLoss(nn.Module):
         self.lambda2 = loss_cfg.lambda2
         self.lambda3 = loss_cfg.lambda3
         self.tau = loss_cfg.temperature
+        # "cosine" keeps the paper Eq. (34) form (GT class only, no negatives);
+        # "nce" uses softmax over all seen classes so the term has real
+        # discriminative gradient instead of being dwarfed by L_cls.
+        self.align_mode = str(getattr(loss_cfg, "align_mode", "cosine")).lower()
+        if self.align_mode not in ("cosine", "nce"):
+            raise ValueError("model.loss.align_mode must be 'cosine' or 'nce'.")
+        # "gt" keeps the paper Eq. (35) form (GT row only); "all" regularizes
+        # every class prototype so the refiner cannot drift on unlabeled rows.
+        self.pres_target = str(getattr(loss_cfg, "pres_target", "gt")).lower()
+        if self.pres_target not in ("gt", "all"):
+            raise ValueError("model.loss.pres_target must be 'gt' or 'all'.")
+        # "mse" matches Eq. (35); "cosine" is scale-invariant for L2-normalized
+        # vectors and gives a slightly stronger signal for small residuals.
+        self.pres_mode = str(getattr(loss_cfg, "pres_mode", "mse")).lower()
+        if self.pres_mode not in ("mse", "cosine"):
+            raise ValueError("model.loss.pres_mode must be 'mse' or 'cosine'.")
 
     def forward(self, s_c, y, v_tilde=None, p_sem=None, p_ref=None):
         """
@@ -59,7 +75,15 @@ class HSPRNLoss(nn.Module):
                 f"got {v_tilde.shape[-1]} and {p_sem.shape[-1]}."
             )
         p_sem_y = p_sem[y]
-        l_align = (1.0 - F.cosine_similarity(v_tilde, p_sem_y, dim=-1)).mean()
+        if self.align_mode == "nce":
+            # Softmax over all seen prototypes: pull v_tilde to its class and
+            # push it away from the other seen classes (same tau as L_cls).
+            logits = F.cosine_similarity(
+                v_tilde.unsqueeze(1), p_sem.unsqueeze(0), dim=-1
+            ) / self.tau
+            l_align = F.cross_entropy(logits, y)
+        else:
+            l_align = (1.0 - F.cosine_similarity(v_tilde, p_sem_y, dim=-1)).mean()
 
         # 3) Prototype preservation (Eq. 35)
         if p_ref.shape[-1] != p_sem.shape[-1]:
@@ -67,10 +91,23 @@ class HSPRNLoss(nn.Module):
                 "Eq. (35) requires tilde p_ref_y and tilde p_sem_y to share the same "
                 f"dimension, got {p_ref.shape[-1]} and {p_sem.shape[-1]}."
             )
-        batch_indices = torch.arange(B, device=y.device)
-        p_ref_y = p_ref[batch_indices, y]
-        p_sem_y = p_sem[y]
-        l_pres = ((p_ref_y - p_sem_y) ** 2).mean(dim=-1).mean()
+        if self.pres_target == "all":
+            p_sem_all = p_sem.unsqueeze(0)  # (1, C, D)
+            if self.pres_mode == "cosine":
+                l_pres = (
+                    1.0 - F.cosine_similarity(p_ref, p_sem_all, dim=-1)
+                ).mean()
+            else:
+                l_pres = ((p_ref - p_sem_all) ** 2).mean()
+        else:
+            batch_indices = torch.arange(B, device=y.device)
+            p_ref_y = p_ref[batch_indices, y]
+            if self.pres_mode == "cosine":
+                l_pres = (
+                    1.0 - F.cosine_similarity(p_ref_y, p_sem_y, dim=-1)
+                ).mean()
+            else:
+                l_pres = ((p_ref_y - p_sem_y) ** 2).mean(dim=-1).mean()
 
         total_loss = (
             self.lambda1 * l_cls +
