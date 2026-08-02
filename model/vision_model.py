@@ -140,7 +140,15 @@ class VisionModel(nn.Module):
 
         if self.arch_type == 'clip':
             if isinstance(self.levels, (list, tuple)) and len(self.levels) > 0:
-                raise ValueError("CLIP visual backbone currently returns pooled image embeddings; do not set vision.levels.")
+                wanted = []
+                for name in self.levels:
+                    if not (name.startswith("block_") and name.split("_")[1].isdigit()):
+                        raise ValueError(
+                            "CLIP visual backbone supports only block_<k> levels, "
+                            f"got '{name}'."
+                        )
+                    wanted.append(int(name.split("_")[1]))
+                return self.backbone.extract_levels(x, wanted)
             if self.feature_lv not in ('multilevel', 'pool'):
                 raise ValueError(f"Feature level '{self.feature_lv}' is not supported for CLIP visual backbone.")
             return self.backbone(x)

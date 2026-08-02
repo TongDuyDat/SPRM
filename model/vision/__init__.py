@@ -1,6 +1,7 @@
 from .vision_transformer_multitoken import *
 from .vision_transformer_vit import *
 
+import torch
 import torch.nn as nn
 import torchvision.models as tv_models
 
@@ -31,6 +32,49 @@ class CLIPVisualBackbone(nn.Module):
                 if out.dim() == 3:
                     out = out[:, 0]
         return out.float()
+
+    def extract_levels(self, x, levels):
+        """Return CLIP ViT block outputs as token maps [B, N, C].
+
+        levels: iterable of 1-based block indices (e.g. [4, 8, 12] for the
+        ViT-B/32 tower). Mirrors the multilevel mechanism used for ResNet
+        (layer2/layer3/layer4) so the aggregator can combine three levels.
+        """
+        visual = self.clip_model.visual
+        dtype = self.clip_model.dtype
+        wanted = {int(level) for level in levels}
+        x = x.type(dtype)
+        x = visual.conv1(x)
+        x = x.reshape(x.shape[0], x.shape[1], -1).permute(0, 2, 1)
+        class_embedding = visual.class_embedding.to(dtype)
+        x = torch.cat(
+            [
+                class_embedding
+                + torch.zeros(
+                    x.shape[0],
+                    1,
+                    class_embedding.shape[-1],
+                    dtype=dtype,
+                    device=x.device,
+                ),
+                x,
+            ],
+            dim=1,
+        )
+        x = x + visual.positional_embedding.to(dtype)
+        x = visual.ln_pre(x)
+        outs = []
+        for index, block in enumerate(visual.transformer.resblocks, start=1):
+            x = block(x)
+            if index in wanted:
+                outs.append(x.float())
+        if len(outs) != len(wanted):
+            depth = len(visual.transformer.resblocks)
+            raise ValueError(
+                f"Requested CLIP block levels {sorted(wanted)} but tower has "
+                f"only {depth} blocks."
+            )
+        return outs
 
 
 def _clip_visual(model_name):
