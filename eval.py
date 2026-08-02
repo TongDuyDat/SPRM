@@ -56,6 +56,9 @@ def parse_args():
                         help="Evaluate the first N samples from each test split")
     parser.add_argument("--num_workers", type=int, default=None,
                         help="Override DataLoader worker count")
+    parser.add_argument("--refiner_enabled", type=str, default=None,
+                        choices=["true", "false"],
+                        help="Override model.refiner.enabled (diagnostic: disable IPR)")
     return parser.parse_args()
 
 
@@ -148,6 +151,8 @@ def main():
         cfg.data.eval_subset_size = args.eval_subset_size
     if args.num_workers is not None:
         cfg.data.num_workers = args.num_workers
+    if args.refiner_enabled is not None:
+        cfg.model.refiner = {"enabled": args.refiner_enabled == "true"}
 
     set_seed(cfg.training.seed)
 

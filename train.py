@@ -68,6 +68,9 @@ def parse_args():
                         help="Override number of training epochs")
     parser.add_argument("--num_workers", type=int, default=None,
                         help="Override DataLoader worker count")
+    parser.add_argument("--refiner_enabled", type=str, default=None,
+                        choices=["true", "false"],
+                        help="Override model.refiner.enabled (diagnostic: disable IPR)")
     return parser.parse_args()
 
 
@@ -109,6 +112,8 @@ def main():
         cfg.training.epochs = args.epochs
     if args.num_workers is not None:
         cfg.data.num_workers = args.num_workers
+    if args.refiner_enabled is not None:
+        cfg.model.refiner = {"enabled": args.refiner_enabled == "true"}
 
     # Seed
     set_seed(cfg.training.seed)

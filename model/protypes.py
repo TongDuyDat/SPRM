@@ -36,6 +36,10 @@ class InstancePrototypeRefiner(nn.Module):
             "visual_dim",
             getattr(aggregator_cfg, "out_dim", self.prototype_dim),
         )
+        # Diagnostic switch: when false, the refiner is bypassed and refined
+        # prototypes equal the (normalized) semantic prototypes. Lets us test
+        # whether instance refinement trained on seen classes hurts unseen.
+        self.enabled = bool(getattr(refiner_cfg, "enabled", True))
 
         if self.visual_dim == self.prototype_dim:
             self.visual_gate = nn.Identity()
@@ -83,6 +87,9 @@ class InstancePrototypeRefiner(nn.Module):
                 raise ValueError("Batch dimension of p_sem and v_tilde must match.")
             class_count = p_sem.shape[1]
             p_expand = p_sem
+
+        if not self.enabled:
+            return p_expand
 
         v_expand = v_gate.unsqueeze(1).expand(batch_size, class_count, -1)
         q_expand = q.unsqueeze(1).expand(batch_size, class_count, -1)

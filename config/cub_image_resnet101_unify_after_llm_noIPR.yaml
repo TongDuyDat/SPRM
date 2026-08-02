@@ -1,0 +1,82 @@
+# Trial E — ablation: tắt Instance Prototype Refiner (IPR).
+# Cơ sở: tryD có pres ~0.053 (1-cos ~0.053, prototype bị đẩy ~19°) và u sụt
+# sau epoch 7-9 trong khi s leo lên 73% — refinement học theo seen có thể là
+# nguyên nhân chính làm hỏng unseen. Config này giữ nguyên loss tryD
+# (nce + pres all/cosine) nhưng bypass IPR: p_ref = normalize(p_sem).
+# Chạy:
+#   python train.py --config config/cub_image_resnet101_unify_after_llm_noIPR.yaml \
+#     --prepared_root ./prepared_datasets --device cuda --num_workers 2
+#
+# Chẩn đoán nhanh hơn (không train lại): chạy eval.py trên checkpoint tryD
+# với --refiner_enabled false. Nếu ZSL T1 / Cal H không giảm (hoặc còn tăng),
+# IPR chính là thủ phạm gây seen-bias.
+
+data:
+  dataset: "CUB"
+  source: "prepared"
+  prepared_root: "./prepared_datasets"
+  data_root: "./data"
+  image_root: "./datasets"
+  mode: "image"
+  image_size: 224
+  image_preprocess: "imagenet"
+  batch_size: 64
+  num_workers: 2
+  subset_size: null
+  eval_subset_size: null
+  drop_last: false
+  semantic_source: "class_desc"
+  semantic_embedding_path: null
+  semantic_metadata_path: null
+
+experiment:
+  unify_after_llm: true
+
+model:
+  vision:
+    freeze: true
+    backbone_type: "resnet101"
+    pretrained: true
+    levels: ["layer2", "layer3", "layer4"]
+  semantic:
+    freeze: true
+    backbone_type: "clip"
+    pretrained: true
+    clip_model: "./pre-trained/ViT-B-32.pt"
+    max_text_len: 77
+    input_dim: null
+    shared_dim: 512
+    itemwise_pool: true
+  aggregator:
+    level_dims: [512, 1024, 2048]
+    out_dim: 512
+  refiner:
+    enabled: false
+  loss:
+    return_full_output: true
+    use_full: true
+    temperature: 0.12
+    lambda1: 0.75
+    lambda2: 0.5
+    lambda3: 1.0
+    align_mode: "nce"
+    pres_target: "all"
+    pres_mode: "cosine"
+
+training:
+  epochs: 50
+  lr: 3.0e-5
+  weight_decay: 2.0e-4
+  optimizer: "adamw"
+  scheduler: "cosine"
+  warmup_epochs: 5
+  seed: 42
+  eval_freq: 1
+  save_dir: "./checkpoints/cub_image_resnet101_unify_after_llm_noIPR"
+  log_dir: "./logs/cub_image_resnet101_unify_after_llm_noIPR"
+  amp: false
+
+eval:
+  mode: "both"
+
+feature_level: "multilevel"

@@ -96,6 +96,15 @@ def build_candidates(args):
         rng = random.Random(args.seed)
         rng.shuffle(candidates)
         candidates = candidates[: min(args.trials, len(candidates))]
+    for candidate in candidates:
+        for key, value in (
+            ("temperature", args.temperature),
+            ("align_mode", args.align_mode),
+            ("pres_target", args.pres_target),
+            ("pres_mode", args.pres_mode),
+        ):
+            if value is not None:
+                candidate[key] = value
     return candidates
 
 
@@ -192,6 +201,9 @@ def ensure_loss_schema(cfg, candidate):
     loss_cfg.lambda1 = float(candidate["lambda1"])
     loss_cfg.lambda2 = float(candidate["lambda2"])
     loss_cfg.lambda3 = float(candidate["lambda3"])
+    for key in ("temperature", "align_mode", "pres_target", "pres_mode"):
+        if candidate.get(key) is not None:
+            setattr(loss_cfg, key, candidate[key])
     loss_cfg.return_full_output = True
     loss_cfg.use_full = True
 
@@ -379,6 +391,30 @@ def parse_args():
     parser.add_argument("--lambda2-values", type=parse_float_list, default=[0.05, 0.1, 0.2])
     parser.add_argument("--lambda3-values", type=parse_float_list, default=[0.05, 0.1, 0.2])
     parser.add_argument(
+        "--temperature",
+        type=float,
+        default=None,
+        help="Optional loss temperature shared by every candidate.",
+    )
+    parser.add_argument(
+        "--align-mode",
+        default=None,
+        choices=["cosine", "nce"],
+        help="Optional L_align form shared by every candidate.",
+    )
+    parser.add_argument(
+        "--pres-target",
+        default=None,
+        choices=["gt", "all"],
+        help="Optional L_pres class target shared by every candidate.",
+    )
+    parser.add_argument(
+        "--pres-mode",
+        default=None,
+        choices=["mse", "cosine"],
+        help="Optional L_pres metric shared by every candidate.",
+    )
+    parser.add_argument(
         "--metric",
         default="mean",
         choices=["mean", "zsl_T1", "gzsl_H", "cal_H"],
@@ -448,6 +484,11 @@ def main():
             "lambda1": best["loss"]["lambda1"],
             "lambda2": best["loss"]["lambda2"],
             "lambda3": best["loss"]["lambda3"],
+            **{
+                key: best["loss"][key]
+                for key in ("temperature", "align_mode", "pres_target", "pres_mode")
+                if best["loss"].get(key) is not None
+            },
         },
     })
     write_yaml(args.output, result)
