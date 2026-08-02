@@ -39,7 +39,11 @@ class InstancePrototypeRefiner(nn.Module):
         # Diagnostic switch: when false, the refiner is bypassed and refined
         # prototypes equal the (normalized) semantic prototypes. Lets us test
         # whether instance refinement trained on seen classes hurts unseen.
-        self.enabled = bool(getattr(refiner_cfg, "enabled", True))
+        if isinstance(refiner_cfg, dict):
+            enabled = refiner_cfg.get("enabled", True)
+        else:
+            enabled = getattr(refiner_cfg, "enabled", True)
+        self.enabled = bool(enabled)
 
         if self.visual_dim == self.prototype_dim:
             self.visual_gate = nn.Identity()

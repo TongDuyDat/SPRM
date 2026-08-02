@@ -113,7 +113,11 @@ def main():
     if args.num_workers is not None:
         cfg.data.num_workers = args.num_workers
     if args.refiner_enabled is not None:
-        cfg.model.refiner = {"enabled": args.refiner_enabled == "true"}
+        refiner = getattr(cfg.model, "refiner", None)
+        if refiner is None:
+            refiner = type(cfg.model)({})
+        refiner.enabled = args.refiner_enabled == "true"
+        cfg.model.refiner = refiner
 
     # Seed
     set_seed(cfg.training.seed)

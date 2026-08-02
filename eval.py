@@ -152,7 +152,11 @@ def main():
     if args.num_workers is not None:
         cfg.data.num_workers = args.num_workers
     if args.refiner_enabled is not None:
-        cfg.model.refiner = {"enabled": args.refiner_enabled == "true"}
+        refiner = getattr(cfg.model, "refiner", None)
+        if refiner is None:
+            refiner = type(cfg.model)({})
+        refiner.enabled = args.refiner_enabled == "true"
+        cfg.model.refiner = refiner
 
     set_seed(cfg.training.seed)
 
@@ -252,6 +256,7 @@ def main():
 
     # Model
     model = HSPRN(cfg).to(device)
+    print(f"Refiner enabled: {model.ipr.enabled}")
     ckpt = load_checkpoint(args.ckpt, model)
     print(f"Loaded checkpoint from epoch {ckpt.get('epoch', '?')}")
 
