@@ -1,0 +1,111 @@
+# HSPRN-v12 G1 — CUB, CLIP ViT-B/16 — E4 + L_gen (bank synthetic-unseen).
+# Bối cảnh: E4 là run tốt nhất của v11 (cal_H 65.1 kỷ lục, T1 73.9, semantic
+# H 57.3) nhưng u-refined vẫn 37.8 vs trần hình học đóng băng 59.7. Chẩn đoán
+# đã chốt: MỌI gradient phân biệt (l_cls CE, l_align NCE) chỉ chứa ảnh seen,
+# nên W_multi/Ws/IPR học hướng phân biệt-seen; cột unseen không có gradient
+# bảo vệ. E1/E4 chỉ KHỐNG CHẾ (neo hình học), E2/E3 đã BÁC BỎ hướng vá bằng
+# residual (mọi residual per-image dưới CE seen-only đều hội tụ về seen-margin
+# hack). v12 sửa GỐC: tạo nguồn gradient unseen thật.
+# Thay đổi duy nhất so với E4 (cub_clip_v11_e4_b16.yaml) — single-variable:
+#   lambda_gen 1.0 + gen_bank_path + gen_samples_per_step 64.
+# Cơ chế: tools/build_synthetic_bank.py (offline, protocol-safe, một pass
+# TRAINVAL) thống kê per-seen-class của backbone đóng băng (cls [512],
+# gap [3,768], token map level-h [197,768], diag sigma^2 shrunk) rồi chuyển
+# giao sang 50 lớp unseen bằng kernel Nadaraya-Watson/ridge trên phi đóng băng
+# (estimator chọn trên holdout 30/150 seen, gate cos_mean>=0.80 & nn_top1>=30%).
+# Mỗi step trainer lấy 64 mẫu synthetic, đẩy qua ĐÚNG đường inference
+# (mfa -> ipr -> rp_bank -> msh) trên bank 200 lớp và cộng
+#   L_gen = CE(scores_syn/tau, y_syn_global)
+# => gradient unseen chảy vào W_multi (qua v~), Ws (qua p_all dùng chung với
+# ảnh thật), IPR+rp_bank (qua p_ref_syn). Auxiliary duy nhất: L_gen_attn
+# (cùng công thức L_attn, hệ số lambda_attn 0.3) — không hyperparameter mới.
+# Kiến trúc GIỮ NGUYÊN 100%: không module mới, không đổi forward path của ảnh
+# seen, checkpoint tương thích v11 (bank là tensor trainer-side).
+# Gate: u@refined >= 50, T1 >= 74, H >= 56, cal_H >= 64.4, gamma <= 0.05.
+
+data:
+  dataset: "CUB"
+  source: "prepared"
+  prepared_root: "./prepared_datasets"
+  data_root: "./data"
+  image_root: "./datasets"
+  mode: "image"
+  image_size: 224
+  image_preprocess: "clip"
+  batch_size: 256
+  num_workers: 12
+  subset_size: null
+  eval_subset_size: null
+  drop_last: false
+  semantic_source: "embedding"
+  semantic_embedding_path: "./pre-trained/cub_v8_phi_b16.pt"
+  semantic_metadata_path: null
+
+experiment:
+  unify_after_llm: false
+
+model:
+  vision:
+    freeze: true
+    backbone_type: "clip_vit_b16"
+    clip_model: "./pre-trained/ViT-B-16.pt"
+    pretrained: true
+    levels: ["block_4", "block_8", "block_12"]
+    cls_anchor: true
+  semantic:
+    freeze: true
+    backbone_type: "embedding"
+    input_dim: 512
+    shared_dim: 512
+    ws_rank: 32
+    ws_anchor: 0.01
+    field_norm: false
+  aggregator:
+    mode: "anchored"
+    level_dims: [768, 768, 768]
+    out_dim: 512
+  refiner:
+    enabled: true
+    mode: "cross_attn"
+    token_dim: 768
+    gate_bias_init: -2.0
+    lambda_r_init: 0.0
+    attribute_query_path: "./pre-trained/cub_attrq_b16.pt"
+  loss:
+    return_full_output: true
+    use_full: true
+    temperature: 0.07
+    lambda1: 1.0
+    lambda2: 0.1
+    lambda3: 0.5
+    lambda_sem: 2.0
+    lambda_trans: 0.0        # Fix 3: OFF — thay bằng lambda_zs
+    tau_teacher: 0.1
+    align_mode: "nce"
+    pres_target: "all"
+    pres_mode: "cosine"
+    lambda_attn: 0.3
+    lambda_fm: 2.0           # E4: cosv bão hòa 0.90 (đúng vùng thiết kế)
+    lambda_zs: 0.5           # Fix 3 (BẮT BUỘC)
+    lambda_rel: 0.1          # Fix 4 (BẮT BUỘC)
+    lambda_gen: 1.0          # v12: CE trên batch synthetic-unseen (trục chính)
+    gen_bank_path: "./pre-trained/cub_v12_synbank_b16.pt"
+    gen_samples_per_step: 64
+
+training:
+  epochs: 80
+  lr: 1.5e-4
+  weight_decay: 1.0e-4
+  optimizer: "adamw"
+  scheduler: "cosine"
+  warmup_epochs: 5
+  seed: 42
+  eval_freq: 1
+  save_dir: "./checkpoints/cub_clip_v12_g1_b16"
+  log_dir: "./logs/cub_clip_v12_g1_b16"
+  amp: false
+
+eval:
+  mode: "both"
+
+feature_level: "multilevel"

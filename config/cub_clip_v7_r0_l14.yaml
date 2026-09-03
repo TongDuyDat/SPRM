@@ -1,0 +1,84 @@
+# R0-probe on CLIP ViT-L/14 (v7 Phase 1): frozen aligned geometry, eval only.
+# NOTE: L/14 shared space is 768-dim (text+image towers both project to 768).
+# - Vision: CLIP ViT-B/32 pooled image embedding (post visual-projection, i.e.
+#   the space aligned with the CLIP text embeddings by pretraining).
+# - Wv = I frozen (identity 512->512), Ws = I frozen (freeze_Ws), IPR off.
+# - training.probe: single evaluation of the initialized model.
+# Diagnostic target: ZSL >= 48%, gamma* <= 0.05 -> the ~40 u-points lost by the
+# current trained pipeline come from training, not from the frozen geometry.
+
+data:
+  dataset: "CUB"
+  source: "prepared"
+  prepared_root: "./prepared_datasets"
+  data_root: "./data"
+  image_root: "./datasets"
+  mode: "image"
+  image_size: 224
+  image_preprocess: "clip"
+  batch_size: 256
+  num_workers: 12
+  subset_size: null
+  eval_subset_size: null
+  drop_last: false
+  semantic_source: "class_desc"
+  semantic_embedding_path: null
+  semantic_metadata_path: null
+
+experiment:
+  unify_after_llm: true
+
+model:
+  vision:
+    freeze: true
+    backbone_type: "clip_vit_l14"
+    clip_model: "./pre-trained/ViT-L-14.pt"
+    pretrained: true
+    levels: null
+  semantic:
+    freeze: true
+    freeze_Ws: true
+    backbone_type: "clip"
+    pretrained: true
+    clip_model: "./pre-trained/ViT-L-14.pt"
+    max_text_len: 77
+    input_dim: null
+    shared_dim: 768
+    itemwise_pool: true
+  aggregator:
+    input_dim: 768
+    out_dim: 768
+    level_dims: [512, 1024, 2048]
+    wv_init: "identity"
+    freeze_wv: true
+  refiner:
+    enabled: false
+  loss:
+    return_full_output: true
+    use_full: true
+    temperature: 0.07
+    lambda1: 1.0
+    lambda2: 0.0
+    lambda3: 0.0
+    align_mode: "cosine"
+    pres_target: "gt"
+    pres_mode: "mse"
+
+training:
+  probe: true
+  epochs: 1
+  lr: 1.5e-4
+  weight_decay: 1.0e-4
+  optimizer: "adamw"
+  scheduler: "cosine"
+  warmup_epochs: 5
+  seed: 42
+  eval_freq: 1
+  save_dir: "./checkpoints/cub_clip_v7_r0_l14"
+  log_dir: "./logs/cub_clip_v7_r0_l14"
+  amp: false
+
+eval:
+  mode: "both"
+
+feature_level: "multilevel"

@@ -652,6 +652,7 @@ def generate_semantic_metadata(args, dataset_name):
         api_key=args.api_key or generator.DEFAULT_API_KEY,
         model=args.model or generator.DEFAULT_MODEL,
         max_tokens=args.max_tokens or generator.DEFAULT_MAX_TOKENS,
+        temperature=getattr(args, "temperature", None) or generator.DEFAULT_TEMPERATURE,
         retries=args.retries,
         backoff=args.backoff,
         request_delay=args.request_delay,

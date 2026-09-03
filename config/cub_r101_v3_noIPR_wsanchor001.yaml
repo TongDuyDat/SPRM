@@ -1,0 +1,76 @@
+# E4: v3_noIPR + ws_anchor=0.01 (Ws init=Identity, trainable + penalty
+# 0.01*||Ws-I||_F^2 added to loss). Countermeasure test for the fitted-Ws
+# seen-shortcut: E3 (freeze_Ws=I) killed the bias (u 8% vs 3%, gamma 0.09
+# vs 0.24); this run tests whether a soft anchor keeps mfa/Ws flexibility.
+# Baseline: logs/cub_r101_plan5_v3_noIPR.
+
+data:
+  dataset: "CUB"
+  source: "prepared"
+  prepared_root: "./prepared_datasets"
+  data_root: "./data"
+  image_root: "./datasets"
+  mode: "image"
+  image_size: 224
+  image_preprocess: "imagenet"
+  batch_size: 256
+  num_workers: 12
+  subset_size: null
+  eval_subset_size: null
+  drop_last: false
+  semantic_source: "class_desc"
+  semantic_embedding_path: null
+  semantic_metadata_path: null
+
+experiment:
+  unify_after_llm: true
+
+model:
+  vision:
+    freeze: true
+    backbone_type: "resnet101"
+    pretrained: true
+    levels: ["layer2", "layer3", "layer4"]
+  semantic:
+    freeze: true
+    ws_anchor: 0.01
+    backbone_type: "clip"
+    pretrained: true
+    clip_model: "./pre-trained/ViT-B-32.pt"
+    max_text_len: 77
+    input_dim: null
+    shared_dim: 512
+    itemwise_pool: true
+  aggregator:
+    level_dims: [512, 1024, 2048]
+    out_dim: 512
+  refiner:
+    enabled: false
+  loss:
+    return_full_output: true
+    use_full: true
+    temperature: 0.07
+    lambda1: 1.0
+    align_mode: "nce"
+    pres_target: "all"
+    pres_mode: "cosine"
+    lambda2: 1.0
+    lambda3: 0.2
+
+training:
+  epochs: 80
+  lr: 1.5e-4
+  weight_decay: 1.0e-4
+  optimizer: "adamw"
+  scheduler: "cosine"
+  warmup_epochs: 5
+  seed: 42
+  eval_freq: 1
+  save_dir: "./checkpoints/cub_r101_v3_noIPR_wsanchor001"
+  log_dir: "./logs/cub_r101_v3_noIPR_wsanchor001"
+  amp: false
+
+eval:
+  mode: "both"
+
+feature_level: "multilevel"

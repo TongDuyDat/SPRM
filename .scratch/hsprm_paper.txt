@@ -1,0 +1,352 @@
+Hierarchical Semantic Prototype Refinement Model (HSPRM)
+XXXXXXXXXXXX1, XXXXXXX1
+Abstract
+Keywords:
+1. Introduction
+2. Related works
+3. Methods
+4. Proposed Method
+4.1. Overview
+This study proposes a new framework called
+Hierarchical Semantic Prototype Refine-
+ment Network (HSPRN)for Zero-Shot Learn-
+ing (ZSL). The main idea is to construct rich se-
+mantic prototypes for each class and then refine
+these prototypes using image-specific visual fea-
+tures. The proposed framework aims to reduce the
+semantic–visual gap and improve the recognition
+ability for unseen classes.
+In Zero-Shot Learning, the training set only con-
+tains samples from seen classes:
+Y s,(1)
+while the testing stage contains unseen classes:
+Y u,(2)
+with:
+Y s ∩ Y u =∅.(3)
+The objective is to recognize unseen classes with-
+out using any training images from these classes.
+The proposed HSPRN framework consists of five
+main modules:
+•Primitive Semantic Constructor;
+•Visual Encoder;
+∗Corresponding author: XXXXXXXX
+Email address:XXXXXX(XXXXXXX)
+•Multi-level Feature Aggregator;
+•Instance-aware Prototype Refiner;
+•Semantic Matching Head.
+The overall architecture of the proposed frame-
+work is illustrated in Fig. X.
+4.2. Primitive Semantic Constructor
+4.2.1. Objective
+This module constructs semantic prototypes for
+all classes, including both seen and unseen classes.
+Instead of using only class names or simple at-
+tribute vectors, the proposed framework incorpo-
+rates richer semantic information such as:
+•class names;
+•attribute descriptions;
+•hierarchical relations;
+•textual descriptions.
+Thisstrategyhelpsthemodellearnmorediscrim-
+inative semantic representations.
+4.2.2. Input
+For each classc, the semantic information is rep-
+resented as:
+tc ={name c,attr c,hier c,desc c},(4)
+where:
+•name c denotes the class name;
+•attr c denotes the attribute descriptions;
+•hier c denotes the hierarchical relations;
+•desc c denotes the textual or visual description.
+
+4.2.3. Semantic Encoding
+The semantic description is first encoded by a
+text encoder:
+ϕ(tc),(5)
+whereϕ(·)can be implemented using:
+•CLIP text encoder;
+•Sentence-BERT;
+•Transformer encoder.
+The encoded feature is projected into the shared
+semantic space:
+psem
+c =W sϕ(tc),(6)
+where:
+•W s is a learnable projection matrix;
+•p sem
+c denotes the semantic prototype of classc.
+To stabilize the learning process, the prototype
+is normalized:
+˜psem
+c = psem
+c
+∥psemc ∥2
+.(7)
+4.2.4. Output
+The output of this module is the semantic proto-
+type bank:
+P sem ={˜psem
+1 ,˜psem
+2 , . . . ,˜psem
+C }.(8)
+This prototype bank provides semantic knowl-
+edge for all classes.
+4.3. Visual Encoder
+4.3.1. Objective
+This module extracts visual representations from
+the input image.
+4.3.2. Input
+The input image is denoted as:
+x∈ X.(9)
+4.3.3. Visual Feature Extraction
+The image is processed using a visual backbone:
+Z=f vis(x),(10)
+wheref vis(·)can be:
+•ResNet;
+•Vision Transformer (ViT);
+•CLIP image encoder.
+To capture both local and global information,
+multi-level features are extracted:
+Z={z l, zm, zh},(11)
+where:
+•z l denotes low-level features;
+•z m denotes middle-level features;
+•z h denotes high-level semantic features.
+4.3.4. Output
+The output of this module is the set of multi-level
+visual features:
+{zl, zm, zh}.(12)
+4.4. Multi-level Feature Aggregator
+4.4.1. Objective
+This module combines multi-level visual features
+into a unified image representation.
+Different feature levels contain different types of
+information:
+•low-level features capture texture and color;
+•middle-level features capture local structures;
+•high-level features capture semantic informa-
+tion.
+Combining these features helps improve recog-
+nition performance, especially for fine-grained
+datasets such as CUB and SUN.
+4.4.2. Input
+The input features are:
+{zl, zm, zh}.(13)
+2
+
+4.4.3. Feature Aggregation
+The features are first pooled:
+GAP(zl),GAP(z m),GAP(z h),(14)
+where GAP denotes Global Average Pooling.
+The pooled features are concatenated and pro-
+jected:
+v=W v[GAP(zl); GAP(zm); GAP(zh)],(15)
+where:
+•W v is a learnable projection matrix;
+•vdenotes the final visual representation.
+The visual representation is normalized:
+˜v= v
+∥v∥2
+.(16)
+4.4.4. Output
+The output of this module is the image represen-
+tation:
+˜v∈Rd.(17)
+4.5. Instance-aware Prototype Refiner
+4.5.1. Objective
+This is the core module of the proposed frame-
+work.
+Traditional ZSL methods usually use static se-
+mantic prototypes. However, a single prototype
+may not fully represent all visual variations of a
+class.
+Therefore, the proposed framework refines se-
+mantic prototypes according to the input image.
+4.5.2. Input
+This module receives:
+˜v,˜p sem
+c ,(18)
+where:
+•˜vis the visual feature of the image;
+•˜psem
+c is the semantic prototype of classc.
+4.5.3. Prototype Refinement
+First, a gating vector is computed:
+gc =σ(W r[˜v; ˜psem
+c ; ˜v⊙˜psem
+c ]),(19)
+where:
+•σ(·)is the sigmoid activation;
+•⊙denotes Hadamard product;
+•W r is a learnable matrix.
+Next, the visual feature is projected into the pro-
+totype space:
+q=U˜v,(20)
+whereUis a learnable projection matrix.
+The refined prototype is computed as:
+ˆpc = ˜psem
+c +g c ⊙q.(21)
+Finally, the refined prototype is normalized:
+˜pref
+c = ˆpc
+∥ˆpc∥2
+.(22)
+4.5.4. Interpretation
+The refinement process can be interpreted as:
+Refined Prototype=Semantic Prior+Visual Adaptation.
+(23)
+This helps the prototype adapt to the current
+image while preserving semantic consistency.
+4.5.5. Output
+The output is the refined prototype bank:
+P ref (x) ={˜pref
+c |c∈ Y}.(24)
+4.6. Semantic Matching Head
+4.6.1. Objective
+This module performs final prediction by match-
+ing visual features and refined prototypes.
+4.6.2. Input
+The inputs are:
+˜v, P ref (x).(25)
+4.6.3. Similarity Computation
+The compatibility score between imagexand
+classcis computed using cosine similarity:
+sc = cos(˜v,˜pref
+c ) = ˜v⊤ ˜pref
+c
+∥˜v∥2∥˜pref
+c ∥2
+.(26)
+3
+
+4.6.4. Prediction
+In standard ZSL, prediction is performed only on
+unseen classes:
+ˆy= arg max
+c∈Y u
+sc.(27)
+For the GZSL extension, prediction can be per-
+formed on both seen and unseen classes:
+ˆy= arg max
+c∈Y s∪Y u
+sc.(28)
+4.6.5. Output
+The output of this module includes:
+S={s c |c∈ Y},(29)
+and the final predicted labelˆy.
+4.7. Training Objective
+T
+4.8. Training Objective
+The proposed framework is trained using only
+samples from seen classes. Given a training sample
+(x, y), wherexis an image andy∈ Y s is its ground-
+truth label, the objective function is designed to op-
+timize semantic consistency, visual–semantic align-
+ment, prototype refinement, and classification per-
+formance simultaneously.
+Unlike contrastive learning methods for natural
+image retrieval, the proposed framework does not
+rely on large-scale Top-K hard negative mining.
+This is because the ZSL setting already operates
+on a limited number of semantic classes with prede-
+fined semantic relationships. Instead, the proposed
+method focuses on preserving semantic structure
+and improving prototype discrimination through
+semantic alignment and prototype refinement.
+The overall training objective consists of four loss
+components:
+L=λ 1Lcls +λ 2Lsem +λ 3Lalign +λ 4Lpres,(30)
+where:
+•L cls is the classification loss;
+•L sem is the semantic consistency loss;
+•L align is the visual–semantic alignment loss;
+•L pres is the prototype preservation loss;
+•λ 1, λ2, λ3, λ4 are balancing coefficients.
+4.8.1. Classification Loss
+The classification loss encourages the model to
+correctly classify samples from seen classes. The
+probability of classcis computed using cosine sim-
+ilarity between the visual representation and the
+refined semantic prototype:
+sc = cos(˜v,˜pref
+c ).(31)
+The classification loss is defined using the soft-
+max cross-entropy function:
+Lcls =−log exp(sy/τ)P
+c∈Y s exp(sc/τ) ,(32)
+where:
+•ydenotes the ground-truth class;
+•τis the temperature parameter.
+This loss helps the model learn discriminative
+boundaries among seen classes.
+4.8.2. Semantic Consistency Loss
+The semantic consistency loss preserves the se-
+mantic information after projection into the shared
+embedding space.
+Since the semantic prototype is generated from
+textual and attribute descriptions, it is important
+to maintain semantic consistency between the orig-
+inal semantic representation and the projected pro-
+totype.
+The semantic consistency loss is defined as:
+Lsem = 1−cos(p sem
+c , ϕ(tc)),(33)
+where:
+•p sem
+c is the semantic prototype;
+•ϕ(t c)is the encoded semantic description.
+This loss helps preserve the semantic meaning of
+each class prototype.
+4.8.3. Visual–Semantic Alignment Loss
+The visual–semantic alignment loss reduces the
+gap between visual features and semantic proto-
+types.
+The objective is to pull image representations
+closer to the semantic prototype of the correspond-
+ing class.
+The alignment loss is defined as:
+Lalign = 1−cos(˜v,˜psem
+y ).(34)
+This loss encourages the visual encoder and se-
+mantic constructor to learn a shared embedding
+space.
+4
+
+4.8.4. Prototype Preservation Loss
+The refined prototype should adapt to the in-
+putimagewhilestillpreservingitsoriginalsemantic
+meaning.
+Without additional constraints, the refinement
+module may overfit to seen classes and distort the
+semantic structure of unseen classes.
+To address this issue, the prototype preservation
+loss is introduced:
+Lpres =∥˜pref
+y −˜psem
+y ∥2
+2.(35)
+This loss regularizes the refinement process and
+prevents excessive prototype drifting.
+4.8.5. Overall Optimization
+The final training objective combines all loss
+terms:
+L=λ 1Lcls +λ 2Lsem +λ 3Lalign +λ 4Lpres.(36)
+The optimization process jointly updates:
+•the semantic projection module;
+•the visual encoder;
+•the feature aggregation module;
+•the prototype refinement module.
+Through this joint optimization strategy, the
+proposed framework learns semantically meaning-
+ful and visually adaptive prototypes, which im-
+proves knowledge transfer from seen classes to un-
+seen classes.
+5. Experiments
+5.1. Experimental settings
+5.1.1. Datasets
+5.1.2. Protocols and metrics
+5.2. Ablation study
+6. Conclusion
+T
+References
+5

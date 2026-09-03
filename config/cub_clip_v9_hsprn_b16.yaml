@@ -1,0 +1,94 @@
+# HSPRN-v9 (True-ZSL) — CUB, CLIP ViT-B/16 — CLASS_DESC, chỉ dùng để PRECOMPUTE phi.
+#
+# Nội dung giống hệt cub_clip_v8_hsprn_b16.yaml về model/loss; khác biệt nằm ở
+# DỮ LIỆU semantics: prepared_datasets/CUB/metadata/class_semantics.json đã được
+# refresh từ data_semantics/CUB/class_descriptions_cub_grounded_after_llm.json
+# (Phần A: 4 kênh name_c/attr_c/hier_c/desc_c sinh từ attribute GT + LLM atomic).
+#
+# Ba đònẩy B1/B2/B5 được bật qua CLI của tools/precompute_class_phi.py:
+#   python tools/precompute_class_phi.py --config config/cub_clip_v9_hsprn_b16.yaml \
+#       --prepared_root ./prepared_datasets --output ./pre-trained/cub_v9_r0_phi_b16.pt
+#   ... --field_norm                          -> cub_v9_r1_phi_b16.pt
+#   ... --field_norm --center                 -> cub_v9_r2_phi_b16.pt   (R2 baseline)
+#   ... --field_norm --center --field_weights 3,0,1,1 -> cub_v9_r4_phi_b16.pt
+# Sau đó train/eval bằng các config cub_clip_v9_r{0,1,2,3,4}_*.yaml.
+
+data:
+  dataset: "CUB"
+  source: "prepared"
+  prepared_root: "./prepared_datasets"
+  data_root: "./data"
+  image_root: "./datasets"
+  mode: "image"
+  image_size: 224
+  image_preprocess: "clip"
+  batch_size: 256
+  num_workers: 12
+  subset_size: null
+  eval_subset_size: null
+  drop_last: false
+  semantic_source: "class_desc"
+  semantic_embedding_path: null
+  semantic_metadata_path: null
+
+experiment:
+  unify_after_llm: true
+
+model:
+  vision:
+    freeze: true
+    backbone_type: "clip_vit_b16"
+    clip_model: "./pre-trained/ViT-B-16.pt"
+    pretrained: true
+    levels: null
+  semantic:
+    freeze: true
+    backbone_type: "clip"
+    pretrained: true
+    clip_model: "./pre-trained/ViT-B-16.pt"
+    max_text_len: 77
+    input_dim: null
+    shared_dim: 512
+    itemwise_pool: true
+    ws_rank: 32
+    ws_anchor: 0.01
+  aggregator:
+    input_dim: 512
+    out_dim: 512
+    level_dims: [512, 1024, 2048]
+    wv_init: "identity"
+    freeze_wv: true
+  refiner:
+    enabled: true
+    gate_bias_init: -2.0
+  loss:
+    return_full_output: true
+    use_full: true
+    temperature: 0.07
+    lambda1: 1.0
+    lambda2: 0.1
+    lambda3: 0.5
+    lambda_sem: 1.0
+    lambda_trans: 0.5
+    tau_teacher: 0.1
+    align_mode: "nce"
+    pres_target: "all"
+    pres_mode: "cosine"
+
+training:
+  epochs: 80
+  lr: 1.5e-4
+  weight_decay: 1.0e-4
+  optimizer: "adamw"
+  scheduler: "cosine"
+  warmup_epochs: 5
+  seed: 42
+  eval_freq: 1
+  save_dir: "./checkpoints/cub_clip_v9_hsprn_b16"
+  log_dir: "./logs/cub_clip_v9_hsprn_b16"
+  amp: false
+
+eval:
+  mode: "both"
+
+feature_level: "multilevel"

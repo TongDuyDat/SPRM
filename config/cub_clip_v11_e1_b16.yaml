@@ -1,0 +1,98 @@
+# HSPRN-v11 E1 — CUB, CLIP ViT-B/16 — v10 + 3 ràng buộc hình học (Fix 1+3+4).
+# Bối cảnh: v10 mất ~30 điểm u (59.7 -> 29.9) vì W_multi/IPR/BA được huấn
+# luyện hoàn toàn bằng gradient seen-only, không có neo giữ hình học đóng
+# băng (xem .scratch/BAO_CAO_U_COLLAPSE_VA_DE_XUAT.md).
+# Thay đổi so với v10 (cub_clip_v10_ca_b16.yaml):
+#   (1) Fix 1  L_fm 1.0: frozen-anchor cosine retention cho v_tilde
+#       (WiSE-FT feature-space) — phạt độ xoay v~ khỏi normalize(cls).
+#   (2) Fix 3  L_zs 0.5: chưng cất posterior zero-shot đóng băng vào
+#       ĐÚNG đường refined (scores_all 200 lớp) — nguồn gradient unseen đầu
+#       tiên; thay L_trans (dạy m_s tách rời, thực nghiệm tệ hơn 10u).
+#   (3) Fix 4  L_rel 0.1: relational KD (RKD-D) cho Ws trên full 200 lớp —
+#       bảo toàn phân phối khoảng cách theo cặp của phi đóng băng.
+#   IPR giữ nguyên kiến trúc v10 (Fix 2 = E2, sau E1).
+# Gate: u@80 >= 50, T1 >= 74, H >= 56, cal_H >= 64.4.
+
+data:
+  dataset: "CUB"
+  source: "prepared"
+  prepared_root: "./prepared_datasets"
+  data_root: "./data"
+  image_root: "./datasets"
+  mode: "image"
+  image_size: 224
+  image_preprocess: "clip"
+  batch_size: 256
+  num_workers: 12
+  subset_size: null
+  eval_subset_size: null
+  drop_last: false
+  semantic_source: "embedding"
+  semantic_embedding_path: "./pre-trained/cub_v8_phi_b16.pt"
+  semantic_metadata_path: null
+
+experiment:
+  unify_after_llm: false
+
+model:
+  vision:
+    freeze: true
+    backbone_type: "clip_vit_b16"
+    clip_model: "./pre-trained/ViT-B-16.pt"
+    pretrained: true
+    levels: ["block_4", "block_8", "block_12"]
+    cls_anchor: true
+  semantic:
+    freeze: true
+    backbone_type: "embedding"
+    input_dim: 512
+    shared_dim: 512
+    ws_rank: 32
+    ws_anchor: 0.01
+    field_norm: false
+  aggregator:
+    mode: "anchored"
+    level_dims: [768, 768, 768]
+    out_dim: 512
+  refiner:
+    enabled: true
+    mode: "cross_attn"
+    token_dim: 768
+    gate_bias_init: -2.0
+    lambda_r_init: 0.0
+    attribute_query_path: "./pre-trained/cub_attrq_b16.pt"
+  loss:
+    return_full_output: true
+    use_full: true
+    temperature: 0.07
+    lambda1: 1.0
+    lambda2: 0.1
+    lambda3: 0.5
+    lambda_sem: 2.0
+    lambda_trans: 0.0        # Fix 3: OFF — thay bằng lambda_zs
+    tau_teacher: 0.1
+    align_mode: "nce"
+    pres_target: "all"
+    pres_mode: "cosine"
+    lambda_attn: 0.3
+    lambda_fm: 1.0           # Fix 1 (BẮT BUỘC)
+    lambda_zs: 0.5           # Fix 3 (BẮT BUỘC)
+    lambda_rel: 0.1          # Fix 4 (BẮT BUỘC)
+
+training:
+  epochs: 80
+  lr: 1.5e-4
+  weight_decay: 1.0e-4
+  optimizer: "adamw"
+  scheduler: "cosine"
+  warmup_epochs: 5
+  seed: 42
+  eval_freq: 1
+  save_dir: "./checkpoints/cub_clip_v11_e1_b16"
+  log_dir: "./logs/cub_clip_v11_e1_b16"
+  amp: false
+
+eval:
+  mode: "both"
+
+feature_level: "multilevel"

@@ -158,7 +158,6 @@ def main():
     if data_source == "prepared":
         if data_mode != "image":
             raise ValueError("Prepared dataset packages currently support data.mode='image' only.")
-        semantic_embedding_path = None
         semantic_metadata_path = os.path.join(
             prepared_root,
             dataset_name,
@@ -169,6 +168,7 @@ def main():
             prepared_root,
             dataset_name,
             require_full_semantics=True,
+            semantic_embedding_path=semantic_embedding_path,
             image_size=getattr(cfg.data, "image_size", 224),
             image_preprocess=image_preprocess,
         )

@@ -9,11 +9,16 @@ if __package__ is None:
     __package__ = "model"
 
 import torch
+import torch.nn.functional as F
 
 from .aggregator import MultiFeatureAggregator
 from .hsprn_outputs import HSPRNOutput
 from .matching_head import SematicMatchingHead
-from .protypes import InstancePrototypeRefiner, RefinedPrototypeBank
+from .protypes import (
+    CrossAttentionPrototypeRefiner,
+    InstancePrototypeRefiner,
+    RefinedPrototypeBank,
+)
 from .sematics.constructor import PriSematicConstructor
 from .vision_model import VisionModel
 
@@ -28,9 +33,27 @@ class HSPRN(torch.nn.Module):
         self.psc = PriSematicConstructor(cfg)
         self.vis_encoder = VisionModel(cfg)
         self.mfa = MultiFeatureAggregator(cfg)
-        self.ipr = InstancePrototypeRefiner(cfg)
+        # v10: refiner.mode "cross_attn" switches IPR core to the
+        # cross-attention variant (patch-token residual); anything else keeps
+        # the legacy InstancePrototypeRefiner for full back-compat.
+        refiner_cfg = getattr(cfg.model, "refiner", object())
+        if isinstance(refiner_cfg, dict):
+            refiner_mode = refiner_cfg.get("mode", "mlp")
+        else:
+            refiner_mode = getattr(refiner_cfg, "mode", "mlp")
+        if refiner_mode == "cross_attn":
+            self.ipr = CrossAttentionPrototypeRefiner(cfg)
+        else:
+            self.ipr = InstancePrototypeRefiner(cfg)
         self.rp_bank = RefinedPrototypeBank(cfg)
         self.msh = SematicMatchingHead(cfg)
+
+        # v14 Super-CLIP: Local-Global Fusion Module
+        # W_local chiếu vector thuộc tính vi mô v_local [B, 512] để cộng vào v_global
+        # Khởi tạo zero-init (LP-FT anchor) -> Epoch 0: v_enhanced == v_global == normalize(cls)
+        d_vis = getattr(cfg.model.aggregator, "out_dim", 512)
+        self.W_local = torch.nn.Linear(d_vis, d_vis, bias=False)
+        torch.nn.init.zeros_(self.W_local.weight)
 
         loss_cfg = getattr(cfg.model, "loss", object())
         self.return_full = getattr(loss_cfg, "return_full_output", True)
@@ -42,12 +65,41 @@ class HSPRN(torch.nn.Module):
         p_sem_unnorm = psc_out["p_sem_unnorm"]
 
         visual_levels = self.vis_encoder(vision_feature)
-        v_tilde = self.mfa(visual_levels)
 
-        p_hat = self.ipr(p_sem_norm, v_tilde)
+        attr_pred = None
+        tokens_h = None
+        cls_anchor = None
+        v_local = None
+        if isinstance(visual_levels, dict):
+            # v10 anchored path: {"tokens": [...], "cls": [B,512]}.
+            # MFA (mode "anchored"/"cls_only") consumes the dict; the IPR
+            # residual is read from the LAST (deepest) token map.
+            # v11: keep the frozen zero-shot anchor (bit-exact CLIP CLS
+            # normalized) for L_fm/L_zs — it is the same tensor mfa would
+            # return with W_multi == 0.
+            cls_anchor = F.normalize(visual_levels["cls"], p=2, dim=-1)
+            v_global = self.mfa(visual_levels)
+            tokens_h = visual_levels["tokens"][-1]
+            ipr_res = self.ipr(p_sem_norm, v_global, tokens_h)
+            if len(ipr_res) == 3:
+                p_hat, attr_pred, v_local = ipr_res
+            else:
+                p_hat, attr_pred = ipr_res
+            # v14 Super-CLIP Fusion: v_enhanced = normalize(v_global + W_local(v_local))
+            if v_local is not None:
+                v_tilde = F.normalize(v_global + self.W_local(v_local), p=2, dim=-1)
+            else:
+                v_tilde = v_global
+        else:
+            v_tilde = self.mfa(visual_levels)
+            p_hat = self.ipr(p_sem_norm, v_tilde)
         p_ref = self.rp_bank(p_hat)
 
         scores = self.msh(v_tilde, p_ref)
+        # APR unseen path: scores against the UNREFINED semantic prototypes.
+        # Same matching head (any projection applies identically to both).
+        p_sem_expand = p_sem_norm.unsqueeze(0).expand(v_tilde.shape[0], -1, -1)
+        scores_sem = self.msh(v_tilde, p_sem_expand)
 
         if not self.return_full:
             return scores
@@ -59,6 +111,10 @@ class HSPRN(torch.nn.Module):
             p_ref=p_ref,
             phi_t=phi_t_raw,
             p_sem_unnorm=p_sem_unnorm,
+            scores_sem=scores_sem,
+            attr_pred=attr_pred,
+            tokens=tokens_h,
+            cls_anchor=cls_anchor,
         )
 
 

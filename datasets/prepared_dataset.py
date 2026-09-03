@@ -10,7 +10,11 @@ from PIL import Image
 from torch.utils.data import Dataset
 from torchvision import transforms
 
-from .zsl_dataset import _canonical_semantic_record, normalize_dataset_name
+from .zsl_dataset import (
+    _canonical_semantic_record,
+    load_semantic_embeddings,
+    normalize_dataset_name,
+)
 
 
 class PreparedZSLDataset(Dataset):
@@ -26,6 +30,7 @@ class PreparedZSLDataset(Dataset):
         transform=None,
         return_semantics=False,
         require_full_semantics=False,
+        semantics_override_path=None,
     ):
         self.dataset_name = normalize_dataset_name(dataset_name)
         self.split = split
@@ -34,6 +39,12 @@ class PreparedZSLDataset(Dataset):
         self.image_preprocess = image_preprocess
         self.return_semantics = bool(return_semantics)
         self.require_full_semantics = bool(require_full_semantics)
+        # v9.6 E3: cho phép đè semantics JSON (hybrid) mà không đụng file
+        # class_semantics.json gốc của package (các run cũ không bị ảnh hưởng).
+        self.semantics_override_path = (
+            str(Path(semantics_override_path).expanduser())
+            if semantics_override_path else None
+        )
 
         root = Path(prepared_root).expanduser().resolve()
         package_dir = root if root.name.upper() == self.dataset_name else root / self.dataset_name
@@ -68,6 +79,11 @@ class PreparedZSLDataset(Dataset):
             files.get("class_semantics") or files.get("class_descriptions"),
             metadata_dir / "class_semantics.json",
         )
+        if self.semantics_override_path:
+            semantics_path = Path(self.semantics_override_path)
+            if not semantics_path.is_file():
+                raise FileNotFoundError(
+                    f"semantics_override_path not found: {semantics_path}")
 
         self.attribute = np.asarray(np.load(attributes_path), dtype=np.float32)
         with attribute_names_path.open("r", encoding="utf-8") as handle:
@@ -88,6 +104,13 @@ class PreparedZSLDataset(Dataset):
 
         with semantics_path.open("r", encoding="utf-8") as handle:
             semantic_records = json.load(handle)
+        # v9.6: cho phép dạng dict {class_name: record} (cùng định dạng
+        # data_semantics/*.json) ngoài list truyền thống. Duyệt theo thứ tự
+        # class_names để không phụ thuộc thứ tự key của JSON.
+        if isinstance(semantic_records, dict):
+            semantic_records = [
+                semantic_records[name] for name in self.class_names
+            ]
         if len(semantic_records) != len(self.class_names):
             raise ValueError(
                 f"Semantic class count mismatch in {self.dataset_name}: "
@@ -236,6 +259,7 @@ def build_prepared_zsl_splits(
     prepared_root,
     dataset_name,
     require_full_semantics=True,
+    semantic_embedding_path=None,
     **kwargs,
 ):
     split_kwargs = dict(kwargs)
@@ -250,6 +274,13 @@ def build_prepared_zsl_splits(
         prepared_root, dataset_name, split="test_unseen", **split_kwargs
     )
     semantic = torch.from_numpy(trainval.attribute)
+    if semantic_embedding_path:
+        semantic = load_semantic_embeddings(semantic_embedding_path)
+        if semantic.shape[0] != trainval.num_classes:
+            raise ValueError(
+                f"Semantic embedding class count mismatch: got {semantic.shape[0]}, "
+                f"expected {trainval.num_classes} for {dataset_name}."
+            )
     return {
         "trainval": trainval,
         "test_seen": test_seen,

@@ -1,0 +1,101 @@
+# HSPRN-v8 (True-ZSL) — CUB, CLIP ViT-B/16 — PRECOMPUTED TEXT EMBEDDINGS.
+#
+# Biến thể của cub_clip_v8_hsprn_b16.yaml: bỏ tháp text CLIP (63.4M) khỏi model
+# runtime bằng cách nạp phi_t đã precompute qua data.semantic_embedding_path.
+# Tổng tham số giảm ~152.8M -> ~89.4M (B/16), learnable giữ nguyên ~1.08M.
+#
+# QUY TRÌNH (chạy trên IBM):
+#   1) Precompute phi_t từ config class_desc gốc (encode_class_phi bit-for-bit):
+#        python tools/precompute_class_phi.py \
+#            --config config/cub_clip_v8_hsprn_b16.yaml \
+#            --prepared_root ./prepared_datasets \
+#            --output ./pre-trained/cub_v8_phi_b16.pt
+#   2) Train với config này:
+#        python train.py --config config/grid_b16pc_lsem_050.yaml
+#
+# Khác biệt duy nhất so với bản class_desc:
+#   - data.semantic_source: "embedding" (thay vì "class_desc").
+#   - data.semantic_embedding_path: trỏ tới file .pt ở bước 1.
+#   - experiment.unify_after_llm: false (resolve_semantic_source sẽ ép class_desc
+#     nếu để true; ở đây chỉ nạp phi đã encode sẵn nên không cần policy after-LLM).
+#   - model.semantic: backbone_type "embedding" + input_dim 512 -> psc dùng
+#     identity backbone 0 tham số (không nạp tháp text). Ws/IPR/loss giữ nguyên.
+#
+# Mọi thứ khác (vision, aggregator, refiner, loss, training) GIỐNG HỆT bản gốc để
+# kết quả so sánh trực tiếp được.
+
+data:
+  dataset: "CUB"
+  source: "prepared"
+  prepared_root: "./prepared_datasets"
+  data_root: "./data"
+  image_root: "./datasets"
+  mode: "image"
+  image_size: 224
+  image_preprocess: "clip"
+  batch_size: 256
+  num_workers: 12
+  subset_size: null
+  eval_subset_size: null
+  drop_last: false
+  semantic_source: "embedding"
+  semantic_embedding_path: "./pre-trained/cub_v8_phi_b16.pt"
+  semantic_metadata_path: null
+
+experiment:
+  unify_after_llm: false
+
+model:
+  vision:
+    freeze: true
+    backbone_type: "clip_vit_b16"
+    clip_model: "./pre-trained/ViT-B-16.pt"
+    pretrained: true
+    levels: null
+  semantic:
+    freeze: true
+    backbone_type: "embedding"
+    input_dim: 512
+    shared_dim: 512
+    ws_rank: 32
+    ws_anchor: 0.01
+  aggregator:
+    input_dim: 512
+    out_dim: 512
+    level_dims: [512, 1024, 2048]
+    wv_init: "identity"
+    freeze_wv: true
+  refiner:
+    enabled: true
+    gate_bias_init: -2.0
+  loss:
+    return_full_output: true
+    use_full: true
+    temperature: 0.07
+    lambda1: 1.0
+    lambda2: 0.1
+    lambda3: 0.5
+    lambda_sem: 0.5
+    lambda_trans: 0.5
+    tau_teacher: 0.1
+    align_mode: "nce"
+    pres_target: "all"
+    pres_mode: "cosine"
+
+training:
+  epochs: 80
+  lr: 1.5e-4
+  weight_decay: 1.0e-4
+  optimizer: "adamw"
+  scheduler: "cosine"
+  warmup_epochs: 5
+  seed: 42
+  eval_freq: 1
+  save_dir: "./checkpoints/grid_b16pc_lsem_050"
+  log_dir: "./logs/grid_b16pc_lsem_050"
+  amp: false
+
+eval:
+  mode: "both"
+
+feature_level: "multilevel"

@@ -1,0 +1,86 @@
+# HSPRN-v9.6 — APY, CLIP ViT-B/16 — CLASS_DESC, CHI DUNG DE PRECOMPUTE phi.
+# Semantics: data_semantics/APY/class_descriptions_apy_after_llm_plan5.json
+# (4 truong name_c/attr_c/hier_c/desc_c, attr_c list 10 cau sinh theo dung
+# PROMPTS['attr_c'] chuan CUB; hier_c/desc_c giu tu plan5).
+# Luu y: refresh prepared_datasets/APY/metadata/class_semantics.json tu file
+# tren truoc khi chay (script refresh_semar_3ds.py).
+
+data:
+  dataset: "APY"
+  source: "prepared"
+  prepared_root: "./prepared_datasets"
+  data_root: "./data"
+  image_root: "./datasets"
+  mode: "image"
+  image_size: 224
+  image_preprocess: "clip"
+  batch_size: 256
+  num_workers: 12
+  subset_size: null
+  eval_subset_size: null
+  drop_last: false
+  semantic_source: "class_desc"
+  semantic_embedding_path: null
+  semantic_metadata_path: null
+
+experiment:
+  unify_after_llm: true
+
+model:
+  vision:
+    freeze: true
+    backbone_type: "clip_vit_b16"
+    clip_model: "./pre-trained/ViT-B-16.pt"
+    pretrained: true
+    levels: null
+  semantic:
+    freeze: true
+    backbone_type: "clip"
+    pretrained: true
+    clip_model: "./pre-trained/ViT-B-16.pt"
+    max_text_len: 77
+    input_dim: null
+    shared_dim: 512
+    itemwise_pool: true
+    ws_rank: 32
+    ws_anchor: 0.01
+  aggregator:
+    input_dim: 512
+    out_dim: 512
+    level_dims: [512, 1024, 2048]
+    wv_init: "identity"
+    freeze_wv: true
+  refiner:
+    enabled: true
+    gate_bias_init: -2.0
+  loss:
+    return_full_output: true
+    use_full: true
+    temperature: 0.07
+    lambda1: 1.0
+    lambda2: 0.1
+    lambda3: 0.5
+    lambda_sem: 1.0
+    lambda_trans: 0.5
+    tau_teacher: 0.1
+    align_mode: "nce"
+    pres_target: "all"
+    pres_mode: "cosine"
+
+training:
+  epochs: 80
+  lr: 1.5e-4
+  weight_decay: 1.0e-4
+  optimizer: "adamw"
+  scheduler: "cosine"
+  warmup_epochs: 5
+  seed: 42
+  eval_freq: 1
+  save_dir: "./checkpoints/apy_clip_v96_hsprn_b16"
+  log_dir: "./logs/apy_clip_v96_hsprn_b16"
+  amp: false
+
+eval:
+  mode: "both"
+
+feature_level: "multilevel"

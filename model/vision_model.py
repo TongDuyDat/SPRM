@@ -38,6 +38,9 @@ class VisionModel(nn.Module):
         )
         self.feature_lv = getattr(cfg, 'feature_level', 'multilevel')
         self.levels = getattr(getattr(cfg.model, 'vision', object()), 'levels', None)
+        # v10 anchored mode: also return the bit-exact CLIP CLS from the same
+        # forward (see CLIPVisualBackbone.extract_levels_anchored).
+        self.cls_anchor = bool(getattr(vision_cfg, 'cls_anchor', False))
         self.freeze_backbone = bool(getattr(vision_cfg, 'freeze', False))
         if self.freeze_backbone:
             self.backbone.requires_grad_(False)
@@ -148,6 +151,8 @@ class VisionModel(nn.Module):
                             f"got '{name}'."
                         )
                     wanted.append(int(name.split("_")[1]))
+                if self.cls_anchor:
+                    return self.backbone.extract_levels_anchored(x, wanted)
                 return self.backbone.extract_levels(x, wanted)
             if self.feature_lv not in ('multilevel', 'pool'):
                 raise ValueError(f"Feature level '{self.feature_lv}' is not supported for CLIP visual backbone.")

@@ -1,0 +1,83 @@
+# HSPRN-v10 A2 (ablation MFA-cls) — SUN: giong het sun_clip_v10_ca_b16.yaml tru `aggregator.mode: "cls_only"`
+# (v~ = normalize(cls), bo W_multi) — de tach rieng dong gop cua MFA multi-level.
+# IPR cross-attn + L_attn van bat. (A0 = MFA anchored day du.)
+data:
+  dataset: "SUN"
+  source: "prepared"
+  prepared_root: "./prepared_datasets"
+  data_root: "./data"
+  image_root: "./datasets"
+  mode: "image"
+  image_size: 224
+  image_preprocess: "clip"
+  batch_size: 256
+  num_workers: 12
+  subset_size: null
+  eval_subset_size: null
+  drop_last: false
+  semantic_source: "embedding"
+  semantic_embedding_path: "./pre-trained/sun_v96_phi_b16.pt"
+  semantic_metadata_path: null
+
+experiment:
+  unify_after_llm: false
+
+model:
+  vision:
+    freeze: true
+    backbone_type: "clip_vit_b16"
+    clip_model: "./pre-trained/ViT-B-16.pt"
+    pretrained: true
+    levels: ["block_4", "block_8", "block_12"]
+    cls_anchor: true
+  semantic:
+    freeze: true
+    backbone_type: "embedding"
+    input_dim: 512
+    shared_dim: 512
+    ws_rank: 32
+    ws_anchor: 0.01
+    field_norm: false
+  aggregator:
+    mode: "cls_only"
+    level_dims: [768, 768, 768]
+    out_dim: 512
+  refiner:
+    enabled: true
+    mode: "cross_attn"
+    token_dim: 768
+    gate_bias_init: -2.0
+    lambda_r_init: 0.0
+    attribute_query_path: "./pre-trained/sun_attrq_b16.pt"
+  loss:
+    return_full_output: true
+    use_full: true
+    temperature: 0.07
+    lambda1: 1.0
+    lambda2: 0.1
+    lambda3: 0.5
+    lambda_sem: 2.0
+    lambda_trans: 0.25
+    tau_teacher: 0.1
+    align_mode: "nce"
+    pres_target: "all"
+    pres_mode: "cosine"
+    lambda_attn: 0.3
+
+training:
+  epochs: 80
+  lr: 1.5e-4
+  weight_decay: 1.0e-4
+  optimizer: "adamw"
+  scheduler: "cosine"
+  warmup_epochs: 5
+  seed: 42
+  eval_freq: 1
+  save_dir: "./checkpoints/sun_clip_v10_a2_mfacls"
+  log_dir: "./logs/sun_clip_v10_a2_mfacls"
+  amp: false
+
+eval:
+  mode: "both"
+
+feature_level: "multilevel"

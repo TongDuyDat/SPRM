@@ -1,0 +1,14 @@
+efeb2662b06384fb8dedc12351bfbb54  config/cub_clip_v8_hsprn_b16.yaml
+e62086346d140a66da0bc063e84e4c8e  config/cub_clip_v8_hsprn_b16_precomputed.yaml
+0fcb4a13801f56dc98ec400fafc98c0b  datasets/prepared_dataset.py
+d02aa7c54bfc6371da48c4ec0dfe0abc  losses/hsprn_loss.py
+6f39dd23a2e0c6384f00b1f8aacaf41a  model/aggregator.py
+b006b4010eca8efc4cb55b4f5e90118d  model/hsprn_model.py
+d4e288167049850f18698f0ee26ab3c0  model/hsprn_outputs.py
+abed959ddc32e95f194a4ce8ba0fa6e3  model/protypes.py
+9b6ce36533b117efa56cc0ef37a4da2b  model/sematics/constructor.py
+100475d5b4ac7048bc70a0ad2bf3175f  model/vision/__init__.py
+2b4915d646515a8a860556f4a989898f  tools/evaluator.py
+010e59f77165c8c20907cfdfabe0cea2  tools/precompute_class_phi.py
+be785d39bdcd7dc1faeaf44620f6d87c  train.py
+934ada83b702ac0bb8fabc7172b51674  trainer/trainer.py

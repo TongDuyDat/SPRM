@@ -1,0 +1,89 @@
+# HSPRN-v12 Trial 2 — CUB, CLIP ViT-B/16 — Tri-Loss Hybrid Formulation
+# Kế hoạch chi tiết: docs/KE_HOACH_TRI_LOSS_HSPRN_V12.md (Mục 3, Trial 2)
+# Khắc phục hiện tượng W_multi bị kẹt ở 0 của Trial 1 bằng cách cung cấp
+# mồi lửa gradient ban đầu qua Hard CE liều lượng nhỏ (lambda_cls: 0.1).
+# Hệ thống hàm loss kết hợp cân bằng động:
+#   (1) lambda_task: 1.0 — Phân loại qua Full-Bank 200-class Zero-Shot Soft KD (dây phanh bảo vệ unseen)
+#   (2) lambda_cls: 0.1 — Mồi lửa gradient phân loại seen có kiểm soát liều lượng (kích hoạt W_multi > 0)
+#   (3) lambda_visual: 2.0 — Neo giữ đặc trưng thị giác MFA WiSE-FT (cosv ~ 0.90)
+#   (4) lambda_attr: 0.5 — Định hướng IPR qua Cosine Loss 312 thuộc tính
+# Mục tiêu: Kéo s từ 53.9% lên 70-75% trong khi giữ u >= 50.0%, Calibrated H >= 65.0%.
+
+data:
+  dataset: "CUB"
+  source: "prepared"
+  prepared_root: "./prepared_datasets"
+  data_root: "./data"
+  image_root: "./datasets"
+  mode: "image"
+  image_size: 224
+  image_preprocess: "clip"
+  batch_size: 256
+  num_workers: 12
+  subset_size: null
+  eval_subset_size: null
+  drop_last: false
+  semantic_source: "embedding"
+  semantic_embedding_path: "./pre-trained/cub_v8_phi_b16.pt"
+  semantic_metadata_path: null
+
+experiment:
+  unify_after_llm: false
+
+model:
+  vision:
+    freeze: true
+    backbone_type: "clip_vit_b16"
+    clip_model: "./pre-trained/ViT-B-16.pt"
+    pretrained: true
+    levels: ["block_4", "block_8", "block_12"]
+    cls_anchor: true
+  semantic:
+    freeze: true
+    backbone_type: "embedding"
+    input_dim: 512
+    shared_dim: 512
+    ws_rank: 32
+    ws_anchor: 0.01
+    field_norm: false
+  aggregator:
+    mode: "anchored"
+    level_dims: [768, 768, 768]
+    out_dim: 512
+  refiner:
+    enabled: true
+    mode: "cross_attn"
+    token_dim: 768
+    gate_bias_init: -2.0
+    lambda_r_init: 0.05
+    cfg_mode: "legacy"
+    attribute_query_path: "./pre-trained/cub_attrq_b16.pt"
+  loss:
+    loss_mode: "tri_loss"
+    return_full_output: true
+    use_full: true
+    temperature: 0.07
+    lambda_task: 1.0
+    lambda_cls: 0.1          # Mồi lửa gradient phân loại seen (Phương án 1)
+    lambda_visual: 2.0       # Neo góc thị giác MFA
+    lambda_attr: 0.5         # Cosine thuộc tính 312 chiều
+    attr_loss_type: "cosine"
+    pres_target: "all"
+
+training:
+  epochs: 80
+  lr: 1.5e-4
+  weight_decay: 1.0e-4
+  optimizer: "adamw"
+  scheduler: "cosine"
+  warmup_epochs: 5
+  seed: 42
+  eval_freq: 1
+  save_dir: "./checkpoints/cub_clip_v12_t2_hybrid"
+  log_dir: "./logs/cub_clip_v12_t2_hybrid"
+  amp: false
+
+eval:
+  mode: "both"
+
+feature_level: "multilevel"

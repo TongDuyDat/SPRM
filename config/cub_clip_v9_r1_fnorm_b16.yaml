@@ -1,0 +1,102 @@
+# HSPRN-v9 / R1 = R0 + B1 (field_norm: L2-normalize từng field trước khi mean).
+#
+# Baseline của chuỗi v9 là R2 (config cub_clip_v9_r2_center_b16.yaml);
+# ma trận dưới đây cho biết file này thêm/bớt đòn bẩy nào so với R2.
+#
+# Ma trận v9 (mỗi hàng chỉ khác hàng trước ở đúng một đòn bẩy):
+#   R0 grounded   : semantics mới, model giữ nguyên v8          -> cub_v9_r0_phi_b16.pt
+#   R1 +B1        : L2-normalize từng field vector trước khi mean -> cub_v9_r1_phi_b16.pt
+#   R2 +B2 (config gốc của chuỗi này): Phi <- normalize(Phi - mean_c Phi)          -> cub_v9_r2_phi_b16.pt
+#   R3 +B3        : + class_residual (prototype học được per-class) -> dùng lại phi R2
+#   R4 +B5        : + field_weights [3,0,1,1] (name/hier/desc, bỏ attr) -> cub_v9_r4_phi_b16.pt
+#   R5 +B4        : eval lại checkpoint bằng --score_bank semantic (không train mới)
+#   R6            : tổ hợp tốt nhất (R2..R4) + B4
+#
+# B1/B2/B5 nằm trong ĐƯỜNG ENCODE nên chúng được nung vào file .pt, không phải
+# lúc train. Lệnh sinh phi (chạy trên IBM, sau khi refresh prepared metadata):
+#   python tools/precompute_class_phi.py --config config/cub_clip_v9_hsprn_b16.yaml \
+#       --prepared_root ./prepared_datasets --field_norm --center \
+#       --output ./pre-trained/cub_v9_r2_phi_b16.pt
+#
+# Ngoài semantics + 3 đòn bẩy trên, mọi thứ (vision, aggregator, refiner, loss,
+# training) GIỐNG HỆT cub_clip_v8_hsprn_b16_precomputed.yaml để so sánh trực tiếp.
+# Chỉ tiêu đánh giá: T1 (ZSL unseen). Bảng 9 cột: T1 | T1 seen | u | s | H | Cal u | Cal s | Cal H | gamma.
+
+data:
+  dataset: "CUB"
+  source: "prepared"
+  prepared_root: "./prepared_datasets"
+  data_root: "./data"
+  image_root: "./datasets"
+  mode: "image"
+  image_size: 224
+  image_preprocess: "clip"
+  batch_size: 256
+  num_workers: 12
+  subset_size: null
+  eval_subset_size: null
+  drop_last: false
+  semantic_source: "embedding"
+  semantic_embedding_path: "./pre-trained/cub_v9_r1_phi_b16.pt"
+  semantic_metadata_path: null
+
+experiment:
+  unify_after_llm: false
+
+model:
+  vision:
+    freeze: true
+    backbone_type: "clip_vit_b16"
+    clip_model: "./pre-trained/ViT-B-16.pt"
+    pretrained: true
+    levels: null
+  semantic:
+    freeze: true
+    backbone_type: "embedding"
+    input_dim: 512
+    shared_dim: 512
+    ws_rank: 32
+    ws_anchor: 0.01
+    # Ghi chú nguồn gốc phi (B1 đã bật lúc precompute; không dùng lúc train vì
+    # tháp text đã bị bỏ khỏi runtime).
+    field_norm: true
+  aggregator:
+    input_dim: 512
+    out_dim: 512
+    level_dims: [512, 1024, 2048]
+    wv_init: "identity"
+    freeze_wv: true
+  refiner:
+    enabled: true
+    gate_bias_init: -2.0
+  loss:
+    return_full_output: true
+    use_full: true
+    temperature: 0.07
+    lambda1: 1.0
+    lambda2: 0.1
+    lambda3: 0.5
+    lambda_sem: 2.0
+    lambda_trans: 0.25
+    tau_teacher: 0.1
+    align_mode: "nce"
+    pres_target: "all"
+    pres_mode: "cosine"
+
+training:
+  epochs: 80
+  lr: 1.5e-4
+  weight_decay: 1.0e-4
+  optimizer: "adamw"
+  scheduler: "cosine"
+  warmup_epochs: 5
+  seed: 42
+  eval_freq: 1
+  save_dir: "./checkpoints/cub_clip_v9_r1_fnorm_b16"
+  log_dir: "./logs/cub_clip_v9_r1_fnorm_b16"
+  amp: false
+
+eval:
+  mode: "both"
+
+feature_level: "multilevel"

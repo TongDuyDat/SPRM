@@ -1,0 +1,102 @@
+# HSPRN-v8 (True-ZSL) — CUB, CLIP ViT-B/16.
+#
+# Vá đúng 3 bất biến ZSL (I1/I2/I3): hàm điểm thống nhất s(x,c) = S(Phi_v(x), T_c),
+# KHÔNG SeenHead / lambda_head / score_routing / kappa (đã gỡ ở Task 1+2). Chỉ còn
+# gamma-calibration (class-agnostic) khi eval GZSL.
+#
+# Kiến trúc giữ nguyên HSPRN, học tập trung sang phía semantic (kế thừa R2):
+# - Vision: CLIP ViT-B/16 pooled embedding, freeze. Backbone chỉ giữ tháp thị giác
+#   (Task 4 đã bỏ nhánh text -> ~86.2M tham số visual, không tính text encoder).
+# - Ws = I + B A low-rank (ws_rank=32), soft-anchor (ws_anchor=0.01) + L_sem
+#   (Eq.33, lambda_sem) giữ prototype unseen neo vào chòm CLIP đóng băng.
+# - Wv = I, freeze (không huấn luyện bridge thị giác - Finding 2.1/2.2).
+# - IPR bật (kiến trúc giấy) + gate_bias_init=-2.0 (Task 5): gate sigmoid(Wr(.))
+#   khởi đầu ~0.12 để refined prototype chỉ là nhiễu loạn nhỏ của semantic
+#   prototype (Finding 2.2: IPR mạnh hại unseen).
+# - Loss: align_mode=nce (softmax over seen classes), pres_target=all (200 lớp),
+#   lambda3/lambda_sem/lambda_trans được TĂNG để bù lại việc bỏ SeenHead — các
+#   mỏ neo ZSL-safe (L_pres Eq.35, L_sem Eq.33, L_trans) nay là nguồn giám sát chính.
+#   Giá trị lambda dưới đây là điểm khởi đầu cho lambda-search trên IBM.
+#
+# Tổng tham số mục tiêu: ~87.3M (< 150M), learnable ~1.08M (Ws 32,768 + IPR 1,049,088).
+# Yêu cầu checkpoint: ./pre-trained/ViT-B-16.pt (tải trên IBM, xem porting log Task 6).
+
+data:
+  dataset: "CUB"
+  source: "prepared"
+  prepared_root: "./prepared_datasets"
+  data_root: "./data"
+  image_root: "./datasets"
+  mode: "image"
+  image_size: 224
+  image_preprocess: "clip"
+  batch_size: 256
+  num_workers: 12
+  subset_size: null
+  eval_subset_size: null
+  drop_last: false
+  semantic_source: "class_desc"
+  semantic_embedding_path: null
+  semantic_metadata_path: null
+
+experiment:
+  unify_after_llm: true
+
+model:
+  vision:
+    freeze: true
+    backbone_type: "clip_vit_b16"
+    clip_model: "./pre-trained/ViT-B-16.pt"
+    pretrained: true
+    levels: null
+  semantic:
+    freeze: true
+    backbone_type: "clip"
+    pretrained: true
+    clip_model: "./pre-trained/ViT-B-16.pt"
+    max_text_len: 77
+    input_dim: null
+    shared_dim: 512
+    itemwise_pool: true
+    ws_rank: 32
+    ws_anchor: 0.01
+  aggregator:
+    input_dim: 512
+    out_dim: 512
+    level_dims: [512, 1024, 2048]
+    wv_init: "identity"
+    freeze_wv: true
+  refiner:
+    enabled: true
+    gate_bias_init: -2.0
+  loss:
+    return_full_output: true
+    use_full: true
+    temperature: 0.07
+    lambda1: 1.0
+    lambda2: 0.1
+    lambda3: 0.5
+    lambda_sem: 1.0
+    lambda_trans: 0.5
+    tau_teacher: 0.1
+    align_mode: "nce"
+    pres_target: "all"
+    pres_mode: "cosine"
+
+training:
+  epochs: 80
+  lr: 1.5e-4
+  weight_decay: 1.0e-4
+  optimizer: "adamw"
+  scheduler: "cosine"
+  warmup_epochs: 5
+  seed: 42
+  eval_freq: 1
+  save_dir: "./checkpoints/cub_clip_v8_hsprn_b16"
+  log_dir: "./logs/cub_clip_v8_hsprn_b16"
+  amp: false
+
+eval:
+  mode: "both"
+
+feature_level: "multilevel"

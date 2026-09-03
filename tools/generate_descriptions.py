@@ -64,19 +64,23 @@ PROMPT_CLASS_ALIASES = {
     "monkey": "a non-human primate animal from the simian group",
 }
 
-DEFAULT_API_BASE = "http://localhost:8082/v1/messages"
-DEFAULT_API_KEY = "sk-jeFXnJyYFOjO64bsNQ5lvCyQ48rtDAYeKGFJ95UW4vFSU8Df"
-DEFAULT_MODEL = "claude-sonnet-4-6"
-DEFAULT_MAX_TOKENS = 1024
+DEFAULT_API_BASE = "http://localhost:10100/v1/chat/completions"
+DEFAULT_API_KEY = "ocx_YOUR_KEY_HERE"
+DEFAULT_MODEL = "google-antigravity/gemini-3.1-pro"
+# gemini-3.1-pro is a reasoning model: it spends ~2-3k hidden tokens per call,
+# so a small budget returns finish_reason="length" with content=None.
+DEFAULT_MAX_TOKENS = 8192
+# RCNn (ICCV 2025) Supp. §B generated its descriptors at temperature 0.7.
+DEFAULT_TEMPERATURE = 0.7
 
 
 @contextlib.contextmanager
 def request_deadline(seconds: float):
-    """Enforce a total wall-clock deadline for one streaming request.
+    """Enforce a total wall-clock deadline for one request.
 
-    urllib's timeout is a socket inactivity timeout; SSE servers can keep the
-    socket alive with heartbeat lines forever. The alarm below caps the whole
-    request, including parsing the response body.
+    urllib's timeout is a socket inactivity timeout, so a slow completion (the
+    reasoning model can spend minutes before emitting text) needs this cap on
+    the whole request, including parsing the response body.
     """
     seconds = float(seconds or 0)
     if seconds <= 0:
@@ -84,7 +88,7 @@ def request_deadline(seconds: float):
         return
 
     def raise_timeout(signum, frame):
-        raise TimeoutError(f"SSE request exceeded {seconds:.1f}s")
+        raise TimeoutError(f"API request exceeded {seconds:.1f}s")
 
     old_handler = signal.getsignal(signal.SIGALRM)
     signal.signal(signal.SIGALRM, raise_timeout)
@@ -176,6 +180,7 @@ def parse_args():
     parser.add_argument("--api_key", default=None)
     parser.add_argument("--model", default=None)
     parser.add_argument("--max_tokens", type=int, default=None)
+    parser.add_argument("--temperature", type=float, default=None)
     parser.add_argument("--retries", type=int, default=None)
     parser.add_argument("--backoff", type=float, default=None,
                         help="Initial retry delay in seconds; doubled after each failure.")
@@ -203,10 +208,11 @@ def parse_args():
         ("api_key", DEFAULT_API_KEY),
         ("model", DEFAULT_MODEL),
         ("max_tokens", DEFAULT_MAX_TOKENS),
+        ("temperature", DEFAULT_TEMPERATURE),
         ("retries", 3),
         ("backoff", 2.0),
         ("request_delay", 0.0),
-        ("timeout", 120.0),
+        ("timeout", 300.0),
         ("workers", 1),
     ):
         value = getattr(args, key, None)
@@ -366,131 +372,59 @@ def validate_and_filter_items(
     )
 
 
-def request_body(model: str, prompt: str, max_tokens: int) -> bytes:
+def request_body(model: str, prompt: str, max_tokens: int, temperature: float) -> bytes:
     body = {
         "model": model,
         "max_tokens": max_tokens,
+        "temperature": temperature,
         "messages": [{"role": "user", "content": prompt}],
-        "stream": True,
     }
     return json.dumps(body).encode("utf-8")
 
 
-def extract_delta(obj: Any) -> str:
-    pieces: list[str] = []
+def parse_chat_completion(payload: dict[str, Any]) -> str:
+    choices = payload.get("choices")
+    if not isinstance(choices, list) or not choices:
+        raise ValueError(f"No choices in API response: {str(payload)[:200]}")
 
-    if isinstance(obj, dict):
-        delta = obj.get("delta")
-        if isinstance(delta, dict):
-            for key in ("text", "content"):
-                value = delta.get(key)
-                if isinstance(value, str):
-                    pieces.append(value)
-                elif isinstance(value, list):
-                    pieces.extend(extract_delta(item) for item in value)
-        elif isinstance(delta, str):
-            pieces.append(delta)
+    choice = choices[0] if isinstance(choices[0], dict) else {}
+    message = choice.get("message") if isinstance(choice.get("message"), dict) else {}
+    text = message.get("content")
+    if isinstance(text, str) and text.strip():
+        return text.strip()
 
-        if isinstance(obj.get("text"), str):
-            pieces.append(obj["text"])
-
-        content = obj.get("content")
-        if isinstance(content, str):
-            pieces.append(content)
-        elif isinstance(content, list):
-            pieces.extend(extract_delta(item) for item in content)
-
-        choices = obj.get("choices")
-        if isinstance(choices, list):
-            for choice in choices:
-                pieces.append(extract_delta(choice))
-
-        message = obj.get("message")
-        if isinstance(message, dict):
-            pieces.append(extract_delta(message))
-
-    return "".join(piece for piece in pieces if piece)
+    usage = payload.get("usage") if isinstance(payload.get("usage"), dict) else {}
+    details = usage.get("completion_tokens_details") if isinstance(usage.get("completion_tokens_details"), dict) else {}
+    raise ValueError(
+        "Empty completion text "
+        f"(finish_reason={choice.get('finish_reason')!r}, "
+        f"reasoning_tokens={details.get('reasoning_tokens')}); "
+        "raise --max_tokens if the budget was spent on reasoning."
+    )
 
 
-def is_stop_event(obj: Any) -> bool:
-    if not isinstance(obj, dict):
-        return False
-
-    event_type = obj.get("type")
-    if event_type in {"message_stop", "done", "response.completed", "response.done"}:
-        return True
-
-    if obj.get("done") is True:
-        return True
-
-    choices = obj.get("choices")
-    if isinstance(choices, list):
-        for choice in choices:
-            if isinstance(choice, dict) and choice.get("finish_reason"):
-                return True
-
-    return False
-
-
-def parse_sse_lines(lines) -> str:
-    chunks: list[str] = []
-    for raw_line in lines:
-        if isinstance(raw_line, bytes):
-            line = raw_line.decode("utf-8", errors="replace")
-        else:
-            line = str(raw_line)
-        line = line.strip()
-        if not line or line.startswith(":"):
-            continue
-        if not line.startswith("data:"):
-            continue
-
-        payload = line[len("data:"):].strip()
-        if not payload:
-            continue
-        if payload == "[DONE]":
-            break
-
-        try:
-            obj = json.loads(payload)
-        except json.JSONDecodeError:
-            continue
-
-        if isinstance(obj, dict) and obj.get("type") == "error":
-            raise ValueError(f"SSE API error: {obj.get('error')}")
-
-        chunks.append(extract_delta(obj))
-        if is_stop_event(obj):
-            break
-
-    text = "".join(chunks).strip()
-    if not text:
-        raise ValueError("SSE stream finished without text delta.")
-    return text
-
-
-def call_streaming_api(
+def call_chat_api(
     api_base: str,
     api_key: str,
     model: str,
     prompt: str,
     max_tokens: int,
+    temperature: float,
     timeout: float,
 ) -> str:
     req = urllib.request.Request(
         api_base,
-        data=request_body(model, prompt, max_tokens),
+        data=request_body(model, prompt, max_tokens, temperature),
         headers={
-            "Authorization": f"Bearer {api_key}",
-            "x-api-key": api_key,
-            "anthropic-version": "2023-06-01",
+            "x-opencodex-api-key": api_key,
             "Content-Type": "application/json",
         },
         method="POST",
     )
     with request_deadline(timeout):
         with urllib.request.urlopen(req, timeout=timeout) as response:
-            return parse_sse_lines(response)
+            payload = json.loads(response.read().decode("utf-8", errors="replace"))
+    return parse_chat_completion(payload)
 
 
 def call_with_retry(args, prompt: str) -> str:
@@ -498,12 +432,13 @@ def call_with_retry(args, prompt: str) -> str:
     last_error: Exception | None = None
     for attempt in range(1, args.retries + 1):
         try:
-            text = call_streaming_api(
+            text = call_chat_api(
                 args.api_base,
                 args.api_key,
                 args.model,
                 prompt,
                 args.max_tokens,
+                args.temperature,
                 args.timeout,
             )
             if text.strip():
@@ -521,7 +456,7 @@ def call_with_retry(args, prompt: str) -> str:
                 time.sleep(delay)
                 delay *= 2.0
 
-    raise RuntimeError(f"LLM SSE request failed after {args.retries} attempts: {last_error}")
+    raise RuntimeError(f"LLM chat request failed after {args.retries} attempts: {last_error}")
 
 
 def generate_for_class(args, class_name: str) -> dict[str, Any]:

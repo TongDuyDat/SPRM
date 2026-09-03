@@ -1,0 +1,96 @@
+# HSPRN-v10 A0 (full) — CUB, CLIP ViT-B/16 — Cross-Attention IPR + anchored MFA + L_attn.
+# Clone cub_clip_v9_r6b_noref_v8phi_b16.yaml (baseline T1 74.4 / u 50.1 / H 56.4),
+# giữ nguyên phi path + Ws low-rank + loss/schedule. Thay đổi so với R6b:
+#   (1) vision: levels block_4/8/12 + cls_anchor — MỘT forward lấy 3 token maps
+#       [B,197,768] + bit-exact CLIP CLS [B,512] (extract_levels_anchored).
+#   (2) aggregator mode "anchored": v~ = normalize(cls + W_multi[GAP concat]),
+#       W_multi zero-init => epoch 0 v~ == normalize(cls) ≡ R6b bit-exact.
+#   (3) refiner CROSS-ATTENTION bật lại (eq 19–21): residual lấy từ patch tokens
+#       qua attention, lam_r zero-init => epoch 0 p_hat == p_sem ≡ R6b bit-exact.
+#   (4) L_attn 0.3: MSE(GMP(M_attr), a_y/||a_y||) — giám sát attention bằng
+#       GT attributes (312-d, metadata/attributes.npy).
+#   (5) lambda_trans bật lại (0.25) + tau_teacher (0.1): trainer đã hỗ trợ dict vision path.
+# Gate: T1 >= 74.7 (baseline + 0.3), u >= 49.1.
+# Ablations: A1 = eval A0 ckpt voi --score_bank semantic;
+#            A2 = cub_clip_v10_a2_mfacls.yaml (cls_only); A3 = cub_clip_v10_a3_noattn.yaml.
+
+data:
+  dataset: "CUB"
+  source: "prepared"
+  prepared_root: "./prepared_datasets"
+  data_root: "./data"
+  image_root: "./datasets"
+  mode: "image"
+  image_size: 224
+  image_preprocess: "clip"
+  batch_size: 256
+  num_workers: 12
+  subset_size: null
+  eval_subset_size: null
+  drop_last: false
+  semantic_source: "embedding"
+  semantic_embedding_path: "./pre-trained/cub_v8_phi_b16.pt"
+  semantic_metadata_path: null
+
+experiment:
+  unify_after_llm: false
+
+model:
+  vision:
+    freeze: true
+    backbone_type: "clip_vit_b16"
+    clip_model: "./pre-trained/ViT-B-16.pt"
+    pretrained: true
+    levels: ["block_4", "block_8", "block_12"]
+    cls_anchor: true
+  semantic:
+    freeze: true
+    backbone_type: "embedding"
+    input_dim: 512
+    shared_dim: 512
+    ws_rank: 32
+    ws_anchor: 0.01
+    field_norm: false
+  aggregator:
+    mode: "anchored"
+    level_dims: [768, 768, 768]
+    out_dim: 512
+  refiner:
+    enabled: true
+    mode: "cross_attn"
+    token_dim: 768
+    gate_bias_init: -2.0
+    lambda_r_init: 0.0
+    attribute_query_path: "./pre-trained/cub_attrq_b16.pt"
+  loss:
+    return_full_output: true
+    use_full: true
+    temperature: 0.07
+    lambda1: 1.0
+    lambda2: 0.1
+    lambda3: 0.5
+    lambda_sem: 2.0
+    lambda_trans: 0.25
+    tau_teacher: 0.1
+    align_mode: "nce"
+    pres_target: "all"
+    pres_mode: "cosine"
+    lambda_attn: 0.3
+
+training:
+  epochs: 80
+  lr: 1.5e-4
+  weight_decay: 1.0e-4
+  optimizer: "adamw"
+  scheduler: "cosine"
+  warmup_epochs: 5
+  seed: 42
+  eval_freq: 1
+  save_dir: "./checkpoints/cub_clip_v10_ca_b16"
+  log_dir: "./logs/cub_clip_v10_ca_b16"
+  amp: false
+
+eval:
+  mode: "both"
+
+feature_level: "multilevel"

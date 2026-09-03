@@ -1,0 +1,100 @@
+# HSPRN-v11 E2 — CUB, CLIP ViT-B/16 — E1 + Fix 2 (IPR-v2: CFG residual).
+# E1 đã chạy: u 39.6 (v10: 29.9), cal_H 64.8 — 3 ràng buộc hình học giúp
+# +9.7u nhưng IPR vẫn còn gây hại ~7u (semantic bank u=46.8 vs refined 39.6).
+# E0 (e0_v10_a0.json) kiểm chứng: thành phần image-independent của residual
+# là seen-margin hack — V4 (trừ mean thực nghiệm) +11.7u post-hoc.
+# Thay đổi so với E1 (cub_clip_v11_e1_b16.yaml):
+#   (1) Fix 2a  refiner.cfg_mode "cfg": residual dạng r(V) − r(∅) với
+#       r(∅) tính tại null condition (mean tokens + mean v_tilde trainval,
+#       trainer cache, re-eval mỗi forward). λ_r = guidance scale, init
+#       dương nhỏ 0.05, KHÔNG clamp.
+#   (2) Fix 2b  lambda_tan 0.1: tangent-budget cho góc xoay prototype
+#       p_sem -> p̂ (đối ứng L_fm phía text), scale-invariant.
+#   Giữ nguyên Fix 1 (L_fm 1.0) + Fix 3 (L_zs 0.5) + Fix 4 (L_rel 0.1).
+# Gate: u@80 >= 50, T1 >= 74, H >= 56, cal_H >= 64.4.
+
+data:
+  dataset: "CUB"
+  source: "prepared"
+  prepared_root: "./prepared_datasets"
+  data_root: "./data"
+  image_root: "./datasets"
+  mode: "image"
+  image_size: 224
+  image_preprocess: "clip"
+  batch_size: 256
+  num_workers: 12
+  subset_size: null
+  eval_subset_size: null
+  drop_last: false
+  semantic_source: "embedding"
+  semantic_embedding_path: "./pre-trained/cub_v8_phi_b16.pt"
+  semantic_metadata_path: null
+
+experiment:
+  unify_after_llm: false
+
+model:
+  vision:
+    freeze: true
+    backbone_type: "clip_vit_b16"
+    clip_model: "./pre-trained/ViT-B-16.pt"
+    pretrained: true
+    levels: ["block_4", "block_8", "block_12"]
+    cls_anchor: true
+  semantic:
+    freeze: true
+    backbone_type: "embedding"
+    input_dim: 512
+    shared_dim: 512
+    ws_rank: 32
+    ws_anchor: 0.01
+    field_norm: false
+  aggregator:
+    mode: "anchored"
+    level_dims: [768, 768, 768]
+    out_dim: 512
+  refiner:
+    enabled: true
+    mode: "cross_attn"
+    token_dim: 768
+    gate_bias_init: -2.0
+    lambda_r_init: 0.05          # Fix 2a: guidance scale dương nhỏ, không clamp
+    cfg_mode: "cfg"              # Fix 2a: residual r(V) - r(null)
+    attribute_query_path: "./pre-trained/cub_attrq_b16.pt"
+  loss:
+    return_full_output: true
+    use_full: true
+    temperature: 0.07
+    lambda1: 1.0
+    lambda2: 0.1
+    lambda3: 0.5
+    lambda_sem: 2.0
+    lambda_trans: 0.0        # Fix 3: OFF — thay bằng lambda_zs
+    tau_teacher: 0.1
+    align_mode: "nce"
+    pres_target: "all"
+    pres_mode: "cosine"
+    lambda_attn: 0.3
+    lambda_fm: 1.0           # Fix 1 (BẮT BUỘC)
+    lambda_zs: 0.5           # Fix 3 (BẮT BUỘC)
+    lambda_rel: 0.1          # Fix 4 (BẮT BUỘC)
+    lambda_tan: 0.1          # Fix 2b (tangent budget cho IPR residual)
+
+training:
+  epochs: 80
+  lr: 1.5e-4
+  weight_decay: 1.0e-4
+  optimizer: "adamw"
+  scheduler: "cosine"
+  warmup_epochs: 5
+  seed: 42
+  eval_freq: 1
+  save_dir: "./checkpoints/cub_clip_v11_e2_b16"
+  log_dir: "./logs/cub_clip_v11_e2_b16"
+  amp: false
+
+eval:
+  mode: "both"
+
+feature_level: "multilevel"

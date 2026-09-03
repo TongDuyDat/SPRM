@@ -1,0 +1,77 @@
+# E12: v3_noIPR + pair-based prototype separation loss (RCNn, Đề xuất 1).
+# L_sep = mean_{c != c'} max(0, cos(p_c, p_c')) over ALL 200 prototypes.
+# Hypothesis (RCNn): unseen prototypes sit too close to seen ones in the
+# shared space; an explicit repulsive hinge on Ws pushes them apart.
+# Baseline: logs/cub_r101_plan5_v3_noIPR (best Cal H 46.0%).
+
+data:
+  dataset: "CUB"
+  source: "prepared"
+  prepared_root: "./prepared_datasets"
+  data_root: "./data"
+  image_root: "./datasets"
+  mode: "image"
+  image_size: 224
+  image_preprocess: "imagenet"
+  batch_size: 256
+  num_workers: 12
+  subset_size: null
+  eval_subset_size: null
+  drop_last: false
+  semantic_source: "class_desc"
+  semantic_embedding_path: null
+  semantic_metadata_path: null
+
+experiment:
+  unify_after_llm: true
+
+model:
+  vision:
+    freeze: true
+    backbone_type: "resnet101"
+    pretrained: true
+    levels: ["layer2", "layer3", "layer4"]
+  semantic:
+    freeze: true
+    backbone_type: "clip"
+    pretrained: true
+    clip_model: "./pre-trained/ViT-B-32.pt"
+    max_text_len: 77
+    input_dim: null
+    shared_dim: 512
+    itemwise_pool: true
+  aggregator:
+    level_dims: [512, 1024, 2048]
+    out_dim: 512
+  refiner:
+    enabled: false
+  loss:
+    return_full_output: true
+    use_full: true
+    temperature: 0.07
+    lambda1: 1.0
+    align_mode: "nce"
+    pres_target: "all"
+    pres_mode: "cosine"
+    lambda2: 1.0
+    sep_weight: 0.5
+    sep_margin: 0.0
+    lambda3: 0.2
+
+training:
+  epochs: 80
+  lr: 1.5e-4
+  weight_decay: 1.0e-4
+  optimizer: "adamw"
+  scheduler: "cosine"
+  warmup_epochs: 5
+  seed: 42
+  eval_freq: 1
+  save_dir: "./checkpoints/cub_r101_v3_noIPR_sep05"
+  log_dir: "./logs/cub_r101_v3_noIPR_sep05"
+  amp: false
+
+eval:
+  mode: "both"
+
+feature_level: "multilevel"

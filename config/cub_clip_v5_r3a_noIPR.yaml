@@ -1,0 +1,89 @@
+# R3a (HSPRN-A ablation): R2 minus IPR. Isolates whether the instance
+# refiner is the remaining seen-drift source under aligned geometry
+# (R0: u=50.3 noIPR; R2: u=34.9 IPR on).
+# - Vision: CLIP pooled embedding, Wv = I frozen (aligned geometry locked).
+# - Ws = I + B A low-rank (ws_rank=32), soft-anchored (ws_anchor=0.01) and
+#   constrained by L_sem (Eq. 33, lambda_sem=0.5) — unseen prototypes stay
+#   anchored to the frozen CLIP constellation while Ws adapts.
+# - IPR OFF, pres over ALL 200 classes, L_trans distills
+#   the 200-class phi constellation into the visual space.
+# Targets: u_raw >= 20%, gamma* <= 0.08, Cal H >= 49, ZSL >= 48.
+
+data:
+  dataset: "CUB"
+  source: "prepared"
+  prepared_root: "./prepared_datasets"
+  data_root: "./data"
+  image_root: "./datasets"
+  mode: "image"
+  image_size: 224
+  image_preprocess: "clip"
+  batch_size: 256
+  num_workers: 12
+  subset_size: null
+  eval_subset_size: null
+  drop_last: false
+  semantic_source: "class_desc"
+  semantic_embedding_path: null
+  semantic_metadata_path: null
+
+experiment:
+  unify_after_llm: true
+
+model:
+  vision:
+    freeze: true
+    backbone_type: "clip_vit_b32"
+    clip_model: "./pre-trained/ViT-B-32.pt"
+    pretrained: true
+    levels: null
+  semantic:
+    freeze: true
+    backbone_type: "clip"
+    pretrained: true
+    clip_model: "./pre-trained/ViT-B-32.pt"
+    max_text_len: 77
+    input_dim: null
+    shared_dim: 512
+    itemwise_pool: true
+    ws_rank: 32
+    ws_anchor: 0.01
+  aggregator:
+    input_dim: 512
+    out_dim: 512
+    level_dims: [512, 1024, 2048]
+    wv_init: "identity"
+    freeze_wv: true
+  refiner:
+    enabled: false
+  loss:
+    return_full_output: true
+    use_full: true
+    temperature: 0.07
+    lambda1: 1.0
+    lambda2: 0.1
+    lambda3: 0.2
+    lambda_sem: 0.5
+    lambda_trans: 0.3
+    tau_teacher: 0.1
+    align_mode: "cosine"
+    pres_target: "all"
+    pres_mode: "cosine"
+
+training:
+  epochs: 80
+  lr: 1.5e-4
+  weight_decay: 1.0e-4
+  optimizer: "adamw"
+  scheduler: "cosine"
+  warmup_epochs: 5
+  seed: 42
+  eval_freq: 1
+  save_dir: "./checkpoints/cub_clip_v5_r3a_noIPR"
+  log_dir: "./logs/cub_clip_v5_r3a_noIPR"
+  amp: false
+
+eval:
+  mode: "both"
+
+feature_level: "multilevel"

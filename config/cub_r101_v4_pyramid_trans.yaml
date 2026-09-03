@@ -1,0 +1,84 @@
+# E12: Pyramid-z + IPR on (paper restore) + transfer-alignment (L_trans).
+# - z: per-level projection to d=512 (FPN-style) then concat -> z in R^1536.
+# - refiner.enabled=true (IPR always on; prior ablations proved it is not the
+#   seen-bias cause), align/pres losses restored per paper Eq.34/Eq.35.
+# - L_trans: student = soft 200-class distribution of each REAL seen-class
+#   pooled mean (passes train through the trainable pyramid+Wv); teacher =
+#   frozen phi-space cosine constellation over ALL classes (incl. unseen).
+#   Unseen semantics participate in training WITHOUT any synthetic features.
+# - ws_anchor=0.1 kept (E8 countermeasure for the fitted-Ws seen-shortcut).
+
+data:
+  dataset: "CUB"
+  source: "prepared"
+  prepared_root: "./prepared_datasets"
+  data_root: "./data"
+  image_root: "./datasets"
+  mode: "image"
+  image_size: 224
+  image_preprocess: "imagenet"
+  batch_size: 256
+  num_workers: 12
+  subset_size: null
+  eval_subset_size: null
+  drop_last: false
+  semantic_source: "class_desc"
+  semantic_embedding_path: null
+  semantic_metadata_path: null
+
+experiment:
+  unify_after_llm: true
+
+model:
+  vision:
+    freeze: true
+    backbone_type: "resnet101"
+    pretrained: true
+    levels: ["layer2", "layer3", "layer4"]
+  semantic:
+    freeze: true
+    ws_anchor: 0.1
+    backbone_type: "clip"
+    pretrained: true
+    clip_model: "./pre-trained/ViT-B-32.pt"
+    max_text_len: 77
+    input_dim: null
+    shared_dim: 512
+    itemwise_pool: true
+  aggregator:
+    pyramid: true
+    level_dim: 512
+    level_dims: [512, 1024, 2048]
+    out_dim: 512
+  refiner:
+    enabled: true
+  loss:
+    return_full_output: true
+    use_full: true
+    temperature: 0.07
+    lambda1: 1.0
+    align_mode: "cosine"
+    pres_target: "gt"
+    pres_mode: "mse"
+    lambda2: 0.5
+    lambda3: 0.1
+    lambda_trans: 0.3
+    tau_teacher: 0.1
+
+training:
+  epochs: 80
+  lr: 1.5e-4
+  weight_decay: 1.0e-4
+  optimizer: "adamw"
+  scheduler: "cosine"
+  warmup_epochs: 5
+  seed: 42
+  eval_freq: 1
+  save_dir: "./checkpoints/cub_r101_v4_pyramid_trans"
+  log_dir: "./logs/cub_r101_v4_pyramid_trans"
+  amp: false
+
+eval:
+  mode: "both"
+
+feature_level: "multilevel"

@@ -1,0 +1,431 @@
+\documentclass[10pt,twocolumn,letterpaper]{article}
+
+\usepackage[margin=0.9in]{geometry}
+\usepackage{times}
+\usepackage{graphicx}
+\usepackage{booktabs}
+\usepackage{amsmath,amssymb,amsfonts}
+\usepackage{multirow}
+\usepackage{hyperref}
+\usepackage{xcolor}
+
+% ---------------------------------------------------------------------------
+% HSPRN paper — main file.
+% Section 3 (architecture) is fully written from the actual v9.6 code paths
+% (every equation traced to model/*.py); other sections carry skeletons
+% marked [TODO: co-authors] so they can be filled independently.
+% ---------------------------------------------------------------------------
+
+\newcommand{\todo}[1]{\textcolor{red}{[TODO: #1]}}
+\newcommand{\Seen}{\mathcal{S}}
+\newcommand{\Unseen}{\mathcal{U}}
+\newcommand{\All}{\mathcal{C}}
+\newcommand{\R}{\mathbb{R}}
+\newcommand{\vtilde}{\tilde{v}}
+\newcommand{\phat}{\hat{p}}
+
+\title{HSPRN: Hierarchical Semantic Prototype Refinement Network for\\
+Inductive Zero-Shot Learning on a Frozen Vision--Language Space}
+
+\author{
+  Anonymous Authors\\
+  \small Affiliation\\
+  \small \texttt{email@example.com}
+}
+
+\date{}
+
+\begin{document}
+
+\maketitle
+
+% ===========================================================================
+\begin{abstract}
+\todo{Abstract — viết sau khi các section hoàn tất. Gợi ý nội dung theo số đo: HSPRN = prototype-matching trên CLIP ViT-B/16 đóng băng toàn phía ảnh, đúng 32{,}768 tham số học được ($W_s{=}I{+}BA$ rank 32) toàn phía ngữ nghĩa; khảo sát design-space có kiểm định bác bỏ toàn bộ họ refinement (IPR per-instance, per-class residual, TTA test-time — một cơ chế seen-hub chung); ``Refinement'' còn sống = refine chòm prototype bằng hàm dùng chung $W_s$; kết quả 4 benchmark (CUB 74.4 / APY 84.9 / AWA2 95.9 / SUN 89.2 T1) với semantic bank 4 trường LLM; các negative result có kiểm định (CSLS, CuPL-ensemble, Waffle controls).}
+\end{abstract}
+
+% ===========================================================================
+\section{Introduction}
+\todo{Introduction. Điểm cần đưa: (1) ZSL/GZSL inductive setting và vai trò vision--language pretraining; (2) khoảng trống: các method refine prototype theo ảnh/lớp (instance-level, residual, test-time) hứa hẹn nhưng hại unseen trong inductive ZSL — dẫn số nội bộ: IPR-on 71.0 vs off 74.4 T1, residual sụp $u \to 0$ trong 3 epoch; (3) đóng góp: (a) kiến trúc mà ở đó \emph{duy nhất} khối học được là một phép chiếu rank-32 quanh identity áp cho chòm prototype bằng hàm dùng chung — visual path đóng băng hoàn toàn (một vector CLS, không tham số ảnh), (b) khảo sát design-space có kiểm định: 3 biến thể refinement đều bị bác bỏ bằng cùng một phân tích gradient seen-only, định nghĩa lại ``Refinement'' của tên bài = refine chòm bằng hàm dùng chung, (c) chuẩn semantics 4-trường tái lập qua 4 benchmark. Viết 4--6 đoạn.}
+
+\section{Related Work}
+\todo{Related Work. Nhóm cần trích: (a) CLIP-based ZSL prompting (CoOp, CoCoOp, CuPL, WaffleCLIP); (b) generative ZSL trên feature (f-CLSWGAN, FREE, SDGZSL, GEM-ZSL); (c) transductive/test-time (TransCLIP, DPE, transductive rectification); (d) hubness correction (Dinu \& Baroni, CSLS, inverted softmax); (e) attribute-region (PSVMA/PSVMA+). Nguồn citation đã liệt kê đầy đủ trong docs/nghien\_cuu\_chuyen\_sau\_v95.md §F.}
+
+% ===========================================================================
+\section{HSPRN Architecture}
+\label{sec:arch}
+
+Đây là đóng góp trung tâm của paper. Chúng tôi mô tả kiến trúc theo đúng thứ tự tính toán của implementation, mỗi phương trình truy vết được tới module tương ứng, kèm số tham số và lý do thiết kế từng khối. Ký hiệu: $\Seen$ tập $N_s$ lớp seen, $\Unseen$ tập $N_u$ lớp unseen, $\All=\Seen\cup\Unseen$; $d{=}512$ (shared dimension của CLIP ViT-B/16).
+
+\subsection{Tổng quan đường suy luận}
+\label{sec:overview}
+
+HSPRN cuối cùng (cấu hình dùng trong mọi thí nghiệm) là một đường suy luận \emph{cực đoan tối giản}:
+
+\begin{equation}
+\vtilde = \frac{f_\theta(I)}{\|f_\theta(I)\|_2},
+\qquad
+p_c = \frac{W_s\,\varphi_c}{\|W_s\,\varphi_c\|_2},
+\qquad
+\hat y(I) = \arg\max_{c\in\All}\ \cos(\vtilde,\,p_c)
+\label{eq:pipeline}
+\end{equation}
+
+Phía ảnh: $f_\theta$ là CLIP visual tower đóng băng, đưa thẳng vào chuẩn hóa $\ell_2$ \emph{không qua bất kỳ biến đổi học được nào}. Phía văn bản: mỗi lớp $c$ có một embedding $\varphi_c$ đóng băng (§\ref{sec:phi}), chỉ đi qua phép chiếu $W_s$ rank-32 quanh identity (§\ref{sec:ws}). Phân loại = cosine với prototype; không head tuyến tính, không bias, không temperature lúc inference.
+
+Kiến trúc hoàn chỉnh của HSPRN được thiết kế với nhiều khối: aggregator đa tầng MFA (§\ref{sec:vision}), Instance Prototype Refiner IPR (§\ref{sec:ipr}), per-class residual (một nhánh của §\ref{sec:ipr}), và phép chiếu $W_s$ (§\ref{sec:ws}). Kết quả khảo sát design-space có kiểm định: \emph{mọi khối mang hình thức ``refinement'' theo instance hoặc theo lớp đều bị bác bỏ} — theo cả ba cách triển khai (train-time IPR, per-class residual, test-time adaptation §Experiments); khối sống sót duy nhất là $W_s$ rank-32. Paper vì thế kể kiến trúc như một \textbf{post-mortem có kiểm định}: mô tả đầy đủ từng khối, kèm bằng chứng đo được vì sao nó phải tắt — và định nghĩa lại ``refinement'' còn sống trong HSPRN là \emph{phép tinh chỉnh chòm prototype bằng một hàm dùng chung} ($W_s$ áp cho mọi $\varphi_c$), chứ không phải hiệu chỉnh theo từng ảnh hay từng lớp.
+
+Ba nguyên tắc thiết kế xuyên suốt, mỗi nguyên tắc là kết quả của một vòng bác bỏ có kiểm định chứ không phải lựa chọn từ đầu:
+
+\begin{itemize}
+\item \textbf{P1 — Visual đóng băng tuyệt đối.} $\nabla \vtilde = 0$ với mọi tham số. Toàn bộ khả năng học nằm phía ngữ nghĩa. Điều này bảo vệ geometry pretrain của CLIP khỏi feature distortion (nhóm related work (b)), và — quan trọng hơn cho inductive ZSL — bảo đảm unseen không thể bị ``kéo'' bởi bất kỳ gradient ảnh nào.
+\item \textbf{P2 — Prototype-matching thuần cosine.} Mọi quyết sách xảy ra trong không gian embedding chung của hai tháp CLIP; không tồn tại không gian logits riêng để seen-bias tích lũy (không class-specific bias/scale nào được tối ưu trên seen rồi áp cho unseen).
+\item \textbf{P3 — Khả năng học bị chặn về một phép biến đổi rank-32 quanh identity.} Toàn bộ học của model là $W_s = I + BA$, $B{=}0$ khởi tạo: bắt đầu đúng từ geometry CLIP nguyên bản, mọi thay đổi gói gọn trong 32 hướng và bị anchor giữ gần $\varphi$.
+\end{itemize}
+
+\subsection{Visual path: frozen CLIP tower và MFA}
+\label{sec:vision}
+
+\paragraph{Đường dùng trong mọi thí nghiệm (CLIP).}
+$f_\theta$ là visual tower của CLIP ViT-B/16 (${\sim}86$M tham số, \texttt{requires\_grad=False}). Ảnh $I$ được encode đúng chuẩn CLIP (\texttt{encode\_image}: conv patchify $\to$ 12 blocks $\to$ LN $\to$ pooled projection), trả về một vector $x\in\R^{512}$. MFA sau đó chỉ áp một ma trận đóng băng khởi tạo identity:
+
+\begin{equation}
+\vtilde = \frac{W_{\mathrm{v}}^{\text{single}}\,x}{\|W_{\mathrm{v}}^{\text{single}}\,x\|_2},
+\qquad
+W_{\mathrm{v}}^{\text{single}} \leftarrow I_{512},\ \texttt{freeze}
+\label{eq:mfa-clip}
+\end{equation}
+
+vì $W_{\mathrm{v}}^{\text{single}} = I$ và đóng băng, đường này \emph{đúng bằng} embedding ảnh CLIP đã chuẩn hóa:
+$\vtilde = x/\|x\|_2$. Nói cách khác, trong cấu hình CLIP, khối MFA rút gọn thành pass-through có chủ đích — một assertion kiến trúc chứ không phải tình cờ tiện lợi: \emph{không một phép biến đổi ảnh học được nào được phép tồn tại}.
+
+\paragraph{Đường tổng quát của MFA (cho backbone đa tầng).}
+Với backbone trả nhiều mức đặc trưng $\{z^{\ell}\}_{\ell=1}^{L}$ (ResNet stages, hoặc ViT block outputs qua cơ chế trích block), MFA tổng quát là:
+
+\begin{equation}
+u = W_{\mathrm{v}}\big[\,E_1\,\mathrm{GAP}(z^{1})\,\|\,\cdots\,\|\,E_L\,\mathrm{GAP}(z^{L})\,\big],
+\quad \vtilde = \frac{u}{\|u\|_2}
+\label{eq:mfa-general}
+\end{equation}
+
+với $E_\ell$ chiếu per-level, $W_{\mathrm{v}}$ gộp cuối. Nguyên tắc identity-init của thiết kế: khi mọi chiều khớp, $E_\ell \leftarrow I$ và
+\begin{equation}
+W_{\mathrm{v}} \leftarrow \tfrac{1}{\sqrt{L}}
+\begin{bmatrix} I_d \ \cdots\ I_d \end{bmatrix},
+\label{eq:mfa-init}
+\end{equation}
+sao cho tại epoch 0 đường tổng quát là trung bình có scale của các tầng ($W_{\mathrm{v}}u = \frac{1}{\sqrt L}\sum_\ell E_\ell\bar z^\ell$), rồi toàn bộ $\{E_\ell, W_{\mathrm{v}}\}$ bị đóng băng hoặc neo bằng penalty $\|W_{\mathrm v}-W_{\mathrm v}^{(0)}\|_F^2$. Trong các thí nghiệm CLIP của paper, đường này không nhận dữ liệu (backbone trả một vector pooled) — đúng tinh thần P1: giữ nguyên tắt cả hai đường, không mở gradient nào phía ảnh.
+
+\textbf{Vì sao đóng băng cứng thay vì chỉ anchor.} Thí nghiệm nội bộ cho thấy khi cho $W_{\mathrm v}$ học dưới mục tiêu seen-only, T1 unseen giảm ngay từ những epoch đầu: gradient CE chỉ khen việc \emph{tách seen}, và mọi dịch chuyển của không gian ảnh đều phải trả giá bằng độ hợp lệ của unseen geometry. Đóng băng cứng biến toàn bộ phân tích gradient của §\ref{sec:analysis} thành bài toán một phía: chỉ $p_c$ chuyển động, $\vtilde$ đứng yên — mọi hiện tượng học được đều quy về $W_s$ và (nếu bật) IPR.
+
+\subsection{Semantic bank $\varphi$: chuẩn 4-trường, hai cấp trung bình}
+\label{sec:phi}
+
+Mỗi lớp $c$ mô tả bằng 4 trường văn bản: tên $n_c$, thuộc tính thị giác $a_c$ (${\sim}10$ câu), quan hệ phân cấp $h_c$ (câu is-a hai chiều), mô tả hoàn cảnh $d_c$ (${\sim}10$ câu). Text encoder CLIP đóng băng $t(\cdot)$ encode từng câu độc lập (mỗi câu tự chứa, $<77$ token), rồi gộp theo \emph{hai cấp}:
+
+\begin{equation}
+\varphi_c
+= \frac{1}{|\mathcal F|}\sum_{f\in\mathcal F}
+\Big(\frac{1}{|S_f|}\sum_{s\in S_f} t(s)\Big),
+\qquad \mathcal F=\{n,a,h,d\}
+\label{eq:phi}
+\end{equation}
+
+cấp trường (trong ngoặc) trung bình các câu của một trường; cấp lớp trung bình 4 vector trường. $\varphi_c$ được \emph{precompute một lần trước huấn luyện} và đóng băng vĩnh viễn — huấn luyện chỉ thấy $\varphi$ của mọi lớp, không bao giờ đụng ảnh hay nhãn unseen (chuẩn inductive nguyên vẹn).
+
+Ba quyết định, mỗi cái được kiểm định bằng thí nghiệm đối trọng:
+
+\textbf{(i) Encode từng câu rồi gộp — không ghép một prompt dài.} Mô tả đầy đủ một lớp cần 20--31 câu; ghép thành một prompt vượt budget 77 token của CLIP và để câu dài lấn át câu ngắn. Kiểu per-item này theo tinh thần descriptor-averaging của nhóm (a) related work.
+
+\textbf{(ii) Trung bình hai cấp, không phẳng một cấp.} Trung bình phẳng mọi câu (bỏ cấu trúc trường) thay $W_s$ đã train: T1 $74.4 \to 72.5$. Lý do: anchor ngữ nghĩa $\mathcal L_{sem}$ (§\ref{sec:loss}) gắn $W_s$ vào đúng $\varphi$ mean-4-trường; phá cấu trúc hai cấp là tự phá cấu trúc mà $W_s$ học được.
+
+\textbf{(iii) Không mean-centering bank.} Centering $\varphi_c \leftarrow \mathrm{norm}(\varphi_c - \bar\varphi)$ làm sạch hình học (mean off-diagonal cosine giảm mạnh) nhưng T1 giảm: thành phần chung giữa các lớp mang tín hiệu chuyển giao dùng chung seen/unseen. Bằng chứng đối ứng: thay trường $a_c$ bằng phiên bản ``sạch hóa'' grounded cũng làm T1 $-1.0$, $u$ $-3.0$. Hai kết quả cùng chỉ một điều: trong không gian text CLIP, hướng chung không phải nhiễu cần bỏ, mà là kênh chuyển giao.
+
+\subsection{Structure-preserving projection $W_s = I + BA$}
+\label{sec:ws}
+
+Đây là \emph{khối học được duy nhất} của cấu hình cuối. Prototype trước chuẩn hóa:
+
+\begin{equation}
+p_c^{\text{unnorm}} = W_s\,\varphi_c = \varphi_c + B\,A\,\varphi_c,
+\qquad
+A\in\R^{32\times d},\ B\in\R^{d\times 32},\ B_0=\mathbf 0
+\label{eq:ws}
+\end{equation}
+
+\begin{equation}
+p_c = \frac{p_c^{\text{unnorm}}}{\|p_c^{\text{unnorm}}\|_2},
+\qquad
+\theta_{\text{trainable}} = \{A, B\},\ |\theta| = 2\times 32\times 512 = 32{,}768
+\label{eq:ws-norm}
+\end{equation}
+
+\textbf{Vì sao low-rank quanh identity thay vì ma trận đầy đủ.} Một $W_s$ đầy đủ ($262$k tham số) với $N_c \le 717$ prototype cho phép tái bố trí bank gần như tự do, và với gradient seen-only (§\ref{sec:analysis}) sự tự do đó tiêu tốn vào việc sắp xếp lại \emph{seen} mà không kiểm soát được unseen. Rank-32 chặn \emph{số bậc tự do của việc di chuyển bank} xuống 32 hướng; $221{+}$ chiều còn lại bị khóa về identity. Khởi tạo $B=0$ cho $W_0 = I$ \emph{chính xác}: epoch 0 bắt đầu từ geometry CLIP nguyên bản, mọi thay đổi về sau là có thể phân rã (một cách duy nhất) thành thành phần trong không gian con 32 chiều đã học. Hệ quả trực tiếp cho diễn giải khoa học: toàn bộ ``học'' của HSPRN là một phép quay/kéo rank-32 trên không gian text — nhỏ đến mức ta có thể đo trực tiếp $\|BA\|_F$ theo epoch (log huấn luyện ghi $\|BA\|$ từ $0.64$ lúc sớm tới ${\sim}2.7$ lúc hội tụ) và tách nó khỏi mọi thứ khác.
+
+Anchor ngữ nghĩa bổ sung (thành phần $\mathcal L_{sem}$ của mục tiêu, §\ref{sec:loss}) giữ mỗi $W_s\varphi_y$ gần $\varphi_y$ trên các nhãn dương seen, với $\lambda_{sem}=2.0$ — trọng số lớn thứ hai của toàn mục tiêu — phản ánh vai trò trung tâm của ràng buộc này.
+
+\subsection{Họ Instance/Class Refinement bị bác bỏ: IPR và per-class residual}
+\label{sec:ipr}
+
+Tên model chứa chữ ``Refinement'', nhưng kết quả khảo sát là: \emph{không còn một biến thể refinement nào theo instance hoặc theo lớp sống sót trong cấu hình thắng}. Phần này mô tả hai biến thể đã triển khai và bằng chứng bác bỏ từng cái — chúng là đối trọng khoa học trung tâm của kiến trúc.
+
+\paragraph{IPR — per-instance refinement (train-time).}
+Với mỗi ảnh $i$, IPR sinh một bản hiệu chỉnh \emph{riêng} cho \emph{mọi} prototype:
+
+\begin{equation}
+\phat_{c}^{(i)}
+= p_c + \sigma\!\Big(W_r\big[\,\vtilde_i;\ p_c;\ \vtilde_i\odot p_c\,\big]\Big)\odot\big(U\,\vtilde_i\big)
+\label{eq:ipr}
+\end{equation}
+
+với $U\in\R^{d\times d}$ (không bias), $W_r\in\R^{d\times 3d}$ (bias khởi tạo $-2.0$ nên $\sigma(\cdot)\approx 0.12$ ở epoch 0 — refinement bắt đầu như một nhiễu loạn nhỏ), $\odot$ Hadamard. Tổng tham số khi bật: $512^2 + 512{\times}1536 + 512 = 1{,}049{,}088$. Sau IPR, bank được tái chuẩn hóa $\ell_2$ (RP) rồi chấm cosine như thường.
+
+\paragraph{Per-class residual (train-time).}
+Nhánh thứ hai của họ refinement: một embedding học được \emph{theo lớp} cộng thẳng vào prototype:
+\begin{equation}
+p_c^{\text{unnorm}} = W_s\varphi_c + r_c,\qquad r_c\in\R^{d},\ R_0=\mathbf 0
+\label{eq:residual}
+\end{equation}
+($N_c \times d$ tham số; chỉ các hàng $r_c$ của seen nhận gradient).
+
+\paragraph{Bằng chứng bác bỏ cả hai.}
+Bảng~\ref{tab:refine-reject} gom số đo của toàn bộ họ. IPR (train 80 ep, bật): chấm bằng chính bank đã refine, T1 $71.0$ và GZSL-$u$ chỉ $36.8$ ($\gamma{=}0.07$ — seen-bias mạnh); cùng trọng số đó nhưng chấm bằng semantic bank (tức \emph{bỏ} phần refine khi suy luận): T1 nhảy lên $74.4$ và $u$ từ $36.8$ lên $51.8$ — phần refine là \emph{nhiễu ròng khi suy luận}, dù nó vẫn tham gia huấn luyện (qua $\mathcal L_{pres}$ neo $\phat$ về $p^{sem}$, xem §\ref{sec:loss}). Per-class residual còn tệ hơn: $u$ sụp từ $12.1$ (ep1) về $0.0$ sau 3 epoch — $r_c$ of seen được tối ưu tự do, $r_c$ của unseen đóng băng tại $0$, nên mô hình học cách ``trừ'' unseen khỏi phạm vi phân loại.
+
+Ba dữ kiện kết hợp lại mới ra phán quyết kiến trúc. (i) \emph{Cùng trọng số v8, chỉ đổi bank chấm}: bỏ phần refine lúc suy luận tăng T1 $+3.4$, $u$ $+15.0$ — bằng chứng trực tiếp refine là nhiễu lúc inference. (ii) Nhưng hàng \emph{cao nhất bảng} vẫn là v8-IPR-on-eval-semantic: T1 ngang R6b (74.4), $u$ $51.8$ vs $50.2$ và H $58.1$ vs $56.4$ — tức \emph{train với IPR} không tự phá, thậm chí có chút lợi GZSL khi bỏ nó đi lúc suy luận. (iii) Tuy vậy cấu hình chính thức vẫn chọn off-from-scratch (R6b) vì hai lý do thực nghiệm quan trọng hơn con số chênh 1.6 điểm $u$ của một cặp single-seed: v8 còn khác R6b ở $\lambda_{sem}{=}1.0$ vs $2.0$, $\lambda_{trans}{=}0.5$ vs $0.25$ và đường text live vs precomputed-φ — ba confound khiến phần lợi $u$ của v8 \emph{không thể quy} cho IPR; và phân tích gradient (§\ref{sec:analysis}) cho thấy kênh per-instance là rủi ro cấu trúc cho mọi chuyển giao, trong khi cấu hình off không có kênh đó từ đầu. Phán quyết trung thực: \emph{IPR không xứng đáng giữ lại trong inference}; việc nó không phá khi được neo cứng + bị bỏ lúc suy luận là một phát hiện thú vị, không phải lý do giữ nó.
+
+\begin{table}[t]
+\centering
+\caption{Bác bỏ họ refinement — CUB, mọi hàng train cùng lịch 80ep/seed 42 trừ hàng cuối (test-time, trên điểm số của R6b). ``Refine sống ở đâu'' = thành phần refinement nào còn trong đường suy luận của hàng đó.}
+\label{tab:refine-reject}
+\small
+\begin{tabular}{llrrr}
+\toprule
+Biến thể & Refine sống ở đâu & T1 & u & H \\
+\midrule
+v8 IPR-on & bank refined & 71.0 & 36.8 & 49.5 \\
+v8 IPR-on & chỉ $W_s$ (eval semantic) & 74.4 & 51.8 & 58.1 \\
+R3 per-class residual & $r_c{+}W_s$ & 71.9$^{\dagger}$ & 12.1$^{\dagger}$ & 20.3$^{\dagger}$ \\
+E5 TTA (test-time) & centroid & 74.2 & 50.3 & 56.4 \\
+\midrule
+\textbf{R6b — không refine theo instance/lớp} & \textbf{chỉ $W_s$} & \textbf{74.4} & \textbf{50.2} & \textbf{56.4} \\
+\bottomrule
+\end{tabular}
+
+\raggedright\footnotesize $^{\dagger}$best\_t1@ep1 — residual sụp về $u{=}0$ ngay sau epoch 2 (hàng hội tụ: T1 69.6, $u$ 1.4); số hội tụ công bằng còn thảm hơn số đỉnh sớm.
+\end{table}
+
+\paragraph{Cơ chế chung của sự thất bại.}
+Cả hai biến thể cùng mắc một lỗi cấu trúc: chúng mở \emph{kênh gradient đi từ dữ liệu seen vào hàm biến đổi áp cho cả seen lẫn unseen}. IPR: gradient của ảnh seen chảy vào $U, W_r$ dùng chung mọi lớp — gate $\sigma(W_r[\cdot])$ học \emph{khi nào} bẻ prototype theo hướng $U\vtilde$ để phân biệt seen tốt hơn; prototype unseen nhận cùng phép bẻ nhưng không bao giờ có ảnh đại diện trong gradient để chỉnh lại. Residual: $r_c$ seen được tối ưu, $r_c$ unseen đứng yên — mô hình được thưởng khi đẩy điểm các lớp seen, và unseen mất hạng tương đối. Softmax CE chỉ có $N_s{-}1$ mẫu phủ định seen và \textbf{0} mẫu phủ định unseen (Eq.~\eqref{eq:gradcls}), nên mọi kênh như vậy đều hướng về seen theo construction. Ngược lại $W_s$ an toàn vì nó là \emph{hàm của lớp} (chỉ nhận $\varphi_c$, không nhận ảnh): gradient seen không thể dạy nó ``xử lý riêng'' bất kỳ ảnh cụ thể nào.
+
+\paragraph{Nguyên tắc thiết kế rút ra (và định nghĩa lại ``Refinement'' của tên bài).}
+\emph{Trong inductive ZSL với softmax seen-only, mọi hàm biến đổi prototype phải là hàm dùng chung của lớp - tối ưu qua ngữ nghĩa $\varphi$ - hoặc đóng băng; không được là hàm của ảnh, và không được có tham số theo lớp chỉ seen được tối ưu.} ``Refinement Network'' trong tên HSPRN do đó được định nghĩa lại chính xác: \emph{refine toàn bộ chòm prototype bằng một phép chiếu rank-32 dùng chung} ($W_s$, §\ref{sec:ws}) — không phải hiệu chỉnh prototype theo từng instance hay từng lớp. Phép refine này áp \emph{cùng một hàm} cho cả 200 lớp, nên không có thông tin nào phân biệt seen/unseen lọt vào kiến trúc.
+
+\subsection{Matching head (MSH): cosine thuần, 0 tham số}
+\label{sec:msh}
+
+\begin{equation}
+s_c(I) = \frac{\vtilde^\top p_c}{\|\vtilde\|\,\|p_c\|},
+\qquad
+\hat y(I) = \arg\max_{c}
+\begin{cases}
+s_c(I), & c\in\Unseen \quad \text{(ZSL)}\\
+s_c(I), & c\in\All \quad\ \ \text{(GZSL)}
+\end{cases}
+\label{eq:msh}
+\end{equation}
+
+Không projection, không bias, không temperature lúc test. Mọi biến đổi ``học thêm'' đặt trên điểm số (scale per-class, temperature) đều chỉ được tối ưu trên seen và trở thành nguồn seen-bias thứ hai; cosine nguyên bản giữ thang đo đồng nhất giữa hai nhóm lớp. GZSL dùng calibrated stacking chuẩn $\hat y = \arg\max_c [s_c - \gamma\mathbf 1(c\in\Seen)]$ với $\gamma$ chọn trên tập valid — thuộc protocol evaluation, không thuộc kiến trúc.
+
+\subsection{Ngân sách tham số: một phép chiếu 32{,}768 tham số}
+\label{sec:params}
+
+Bảng~\ref{tab:params} phân rã toàn bộ tham số theo khối và trạng thái sử dụng.
+
+\begin{table}[t]
+\centering
+\caption{Phân rã tham số của HSPRN (cấu hình cuối: refiner off). ``Dùng'' = có gradient/tính toán trong forward; hàng thứ 2 ghi cả ma trận thừa kế từ đường tổng quát của MFA cho trung thực về state-dict.}
+\label{tab:params}
+\small
+\begin{tabular}{lrl}
+\toprule
+Khối & Tham số & Trạng thái \\
+\midrule
+$f_\theta$ CLIP ViT-B/16 visual & ${\sim}86.2$M & frozen, dùng \\
+MFA $W_{\mathrm v}^{\text{single}}$ ($=I$) & 262k & frozen, dùng (pass-through) \\
+MFA $W_{\mathrm v}$, $\{E_\ell\}$ (đa tầng) & ${\sim}2.1$M & frozen, \emph{không dùng} \\
+Bank $\{\varphi_c\}$ & $0$ (precompute) & frozen \\
+$W_s = I + BA$ rank 32 & \textbf{32{,}768} & \textbf{trainable — duy nhất} \\
+IPR ($U, W_r$) & 1{,}049k & \emph{off} ($\phat\equiv p$) \\
+MSH & $0$ & --- \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+Khả năng học hiệu dụng của HSPRN là $32{,}768$ tham số — bằng $0.038\%$ visual tower, toàn bộ nằm phía ngữ nghĩa. Câu architecture claim của paper nằm gọn ở đây: \emph{chuyển giao seen$\to$unseen được điều khiển toàn bộ bởi một phép biến đổi rank-32 quanh identity trên không gian text đóng băng; mọi thứ khác — visual path, bank $\varphi$, matching head — đóng băng để bảo vệ geometry pretrain và giữ mọi kênh gradient seen không chạm được vào ảnh hay vào prototype unseen theo cách hàm-of-ảnh}. Việc ngân sách nhỏ đến mức này không phải mục tiêu tự thân: nó là điểm cuối của quá trình loại bỏ có kiểm định từng kênh gradient (P1: đóng băng ảnh; tắt IPR: loại kênh per-instance — Table~\ref{tab:refine-reject}; bỏ residual: loại kênh per-class; $\mathcal L_{pres} \equiv 0$ khi $\phat \equiv p$, xem §\ref{sec:loss}) — mỗi lần cắt một kênh, unseen ổn định hơn, và thứ còn lại chính là $W_s$.
+
+% ===========================================================================
+\section{Training Objective}
+\label{sec:loss}
+
+Mục tiêu huấn luyện (mã: \texttt{losses/hsprn\_loss.py}; mọi thành phần tính trên batch ảnh seen):
+
+\begin{equation}
+\mathcal{L} = \lambda_1\mathcal{L}_{cls}
++ \lambda_2\mathcal{L}_{align}
++ \lambda_3\mathcal{L}_{pres}
++ \lambda_{t}\mathcal{L}_{trans}
++ \lambda_{sem}\mathcal{L}_{sem}
+\label{eq:total}
+\end{equation}
+
+$\lambda = (1.0,\,0.1,\,0.5,\,0.25,\,2.0)$; $\tau{=}0.07$ (student), $\tau_t{=}0.1$ (teacher). Bảng~\ref{tab:loss-contact} tóm tắt \emph{cách mỗi thành phần chạm tới unseen} — thông tin kiến trúc quan trọng nhất của mục tiêu, vì chỉ có một khối học được (§\ref{sec:params}) nên mọi gradient của \emph{mọi} thành phần cùng chảy về $A,B$ của $W_s$.
+
+\begin{table}[t]
+\centering
+\caption{Mỗi loss chạm unseen qua đâu. ``Distributional'' = ảnh hưởng phân phối soft-label trên 200 lớp; ``geometric'' = chỉ ràng buộc hình học prototype.}
+\label{tab:loss-contact}
+\small
+\begin{tabular}{lll}
+\toprule
+Thành phần & Công thức & Chạm unseen \\
+\midrule
+$\mathcal{L}_{cls}$ & $\mathrm{CE}\big(\cos(\vtilde,p_c)/\tau,\ y\big)$, $c\in\Seen$ & \textbf{không} \\
+$\mathcal{L}_{align}$ & $\mathrm{CE}\big(\cos(\vtilde,p^{sem}_c)/\tau,\ y\big)$, $c\in\Seen$ & \textbf{không} \\
+$\mathcal{L}_{pres}$ & $1-\cos(\phat_c, p^{sem}_c)$, $c\in\All$ & geometric$^{\dagger}$ \\
+$\mathcal{L}_{trans}$ & $\mathrm{KL}\big(\sigma(m_s P_{\All}^{\top}/\tau_v)\,\big\|\,T\big)$ & \textbf{distributional} \\
+$\mathcal{L}_{sem}$ & $1-\cos(W_s\varphi_y,\varphi_y)$ & gián tiếp qua $W_s$ \\
+\bottomrule
+\end{tabular}
+
+\raggedright\footnotesize $^{\dagger}$Khi refiner off ($\phat\equiv p^{sem}$), $\mathcal L_{pres}\equiv 0$ — thành phần này chỉ tồn tại trong các cấu hình có IPR.
+\end{table}
+
+Hai thành phần cần giải thích thêm vì thiết kế của chúng bất thường:
+
+\paragraph{Transfer-alignment $\mathcal L_{trans}$ —teacher thuần text, protocol-safe.}
+Trước huấn luyện, hệ thống dựng \emph{một lần} hai đại lượng đóng băng: (i) $m_s$ — trung bình visual của từng lớp seen, gom từ \emph{trainval only} (không bao giờ đụng test), qua backbone đóng băng với transform eval; (ii) teacher
+\begin{equation}
+T_{s,\cdot} = \mathrm{softmax}\Big(\tfrac{1}{\tau_t}\cos(\varphi_s,\varphi_c)\Big)_{c\in\All},\qquad s\in\Seen:
+\label{eq:teacher}
+\end{equation}
+hằng đệm mô tả ``lớp seen $s$ gần các lớp nào trong toàn bộ chòm 200 lớp, theo khoảng cách ngữ nghĩa thuần văn bản''. Huấn luyện kéo phân phối soft-label của $m_s$ trên $P_{\All} = \{p_c\}_{c\in\All}$ (gồm cả unseen) về $T$ bằng KL. Đây là \emph{thành phần duy nhất} khiến phân phối trên unseen xuất hiện với dấu dương trong huấn luyện — nhưng qua kênh KL với trọng số nhỏ ($0.25$): nó truyền cấu trúc lân cận seen--unseen đã có sẵn trong text space thay vì dạy model ``nhìn'' unseen.
+
+\paragraph{Anchor $\mathcal L_{sem}$ với trọng số lớn.}
+$\lambda_{sem}=2.0$ — cao thứ hai sau $\lambda_1$. Mỗi bước huấn luyện đều kéo $W_s\varphi_y$ về $\varphi_y$ của chính lớp đó. Vai trò kép: (a) chống lại việc $W_s$ lặng xa geometry CLIP khi $\mathcal L_{cls}$ chỉ quan tâm phân biệt seen; (b) chính là ràng buộc khiến mọi thay đổi cách-chấm-điểm không-train-lại (như per-sentence ensemble ở §Experiments) trở nên bất lợi — bank đã được neo vào một cấu trúc cụ thể của $\varphi$.
+
+\paragraph{Gradient của $\mathcal L_{cls}$ — gốc của mọi hiện tượng.}
+Vì $\vtilde$ đóng băng (P1) và softmax chỉ trên $\Seen$:
+\begin{equation}
+\nabla_{p_c}\mathcal L_{cls}
+= \frac{P(c|x)-\mathbf 1[c{=}y]}{\tau}\cdot
+\frac{p_c^{\perp\vtilde}}{\|p_c\|\,\|\vtilde\|}
+\label{eq:gradcls}
+\end{equation}
+với $P(c|x)=\mathrm{softmax}_{c'\in\Seen}$ và $p_c^{\perp\vtilde}$ là thành phần của $\vtilde$ trực giao $p_c$. Hệ số $P(c|x)-\mathbf 1[c{=}y]$ có $N_s-1$ mẫu phủ định \emph{seen} và \textbf{0} mẫu phủ định \emph{unseen}: toàn bộ ``sức đẩy'' của softmax chỉ tái bố trí prototype bên trong hull lồi của các hướng feature seen; unseen chỉ di chuyển gián tiếp qua $A,B$ dùng chung. Với $\tau=0.07$ rất sắc, gradient tập trung vào vài seen cạnh tranh trực tiếp. Phân tích đầy đủ (kể cả cơ chế IPR) ở §\ref{sec:analysis}.
+
+% ===========================================================================
+\section{Gradient Analysis: Seen-Only Optimization and the Failure Modes of Refinement}
+\label{sec:analysis}
+\todo{Section này đã có bản phân tích đầy đủ tiếng Việt trong docs/phan\_tich\_toan\_hoc\_v9.md (mọi phương trình đã truy vết code) — cần người biên tập chuyển sang tiếng Anh theo khung mới: (1) phân rã Eq.~\eqref{eq:gradcls}: $N_s{-}1$ seen negatives, 0 unseen negatives $\Rightarrow$ mọi kênh gradient hàm-chung đều hướng về seen hull; (2) áp dụng phân rã đó cho cả 3 biến thể đã đo (IPR train-time, residual per-class, TTA test-time) — thống nhất một cơ chế giải thích cả ba bảng số; (3) tính chất khi refiner off: chỉ $W_s$ học, $\mathcal L_{pres}\equiv 0$; (4) đối chiếu prediction-vs-measurement (bảng đã có trong docs).}
+
+\subsection{Seen-hub: một cơ chế, ba biến thể thất bại}
+\label{sec:analysis:ipr}
+\todo{Viết thành phân tích thống nhất: từ Eq.~\eqref{eq:gradcls}, mọi hàm $g$ áp cho prototype mà có tham số được tối ưu trên ảnh/nhãn seen đều nhận gradient ``đưa seen lên, không có gradient unseen để cân''. Ba biến thể của bảng \ref{tab:refine-reject} là ba cách khác nhau để mở kênh đó (per-instance $U,W_r$; per-class $r_c$; test-time centroid) — và cả ba giảm $u$ so với baseline không kênh. Đối chứng: $W_s$ là hàm của $\varphi_c$ (không nhận ảnh) nên không thể ``xử lý riêng'' ảnh nào — an toàn theo construction.}
+
+% ===========================================================================
+\section{Experiments}
+\label{sec:exp}
+
+\subsection{Setup}
+\todo{Datasets: CUB (150/50), AWA2 (40/10), APY (20/12), SUN (645/72). CLIP ViT-B/16 frozen; semantic bank 4-trường như §\ref{sec:phi} (mô tả sinh dữ liệu: 4 benchmark cùng một pipeline LLM + code-assembly; 799/799 lớp attr mới sinh cho 3 bộ mở rộng). AdamW lr $1.5$e$-4$, cosine, warmup 5, 80 epochs, seed 42, batch 256. Metric: ZSL T1 (unseen-only candidates), GZSL u/s/H, calibrated stacking $\gamma$ (Chao et al.). Số chính thức = checkpoint epoch-cuối; số best-epoch chỉ tham chiếu và luôn ghi epoch kèm.}
+
+\subsection{Main results: 4 benchmarks}
+\label{sec:exp:main}
+
+Bảng~\ref{tab:main} tóm tắt kết quả chính thức; các số best-epoch (tham chiếu, không chính thức) cùng phân tích theo từng bộ nằm trong audit nội bộ.
+
+\begin{table}[t]
+\centering
+\caption{Kết quả 4 benchmark (9 cột chuẩn; checkpoint ep80 của lịch hoàn chỉnh, seed 42, semantic bank).}
+\label{tab:main}
+\small
+\begin{tabular}{lrrrrrrrrr}
+\toprule
+Dataset & T1 & T1s & u & s & H & Cu & Cs & CH & $\gamma$ \\
+\midrule
+CUB & 74.4 & 67.5 & 50.2 & 64.4 & 56.4 & 66.8 & 56.9 & 61.5 & 0.02 \\
+APY & 84.9 & 81.7 & 71.8 & 79.0 & 75.2 & 75.0 & 76.3 & 75.7 & 0.02 \\
+AWA2 & 95.9 & 90.4 & 79.4 & 88.8 & 83.9 & 90.6 & 81.2 & 85.6 & 0.08 \\
+SUN & 89.2 & 58.2 & 55.1 & 56.7 & 55.9 & 76.5 & 52.4 & 62.2 & 0.03 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\todo{Thêm bảng so SOTA inductive từng benchmark (PSVMA+, CE-GZSL, SDGZSL, FREE...) — số liệu đã thu trong docs/nghien\_cuu\_chuyen\_sau\_v95.md §C; người viết cần tra bảng gốc từng paper để đối chiếu backbone (ResNet-era vs CLIP-based) trước khi xếp hàng so sánh.}
+
+\subsection{Ablation: toàn bộ họ refinement}
+\label{sec:ablation}
+
+Bảng~\ref{tab:refine-reject} (mục §\ref{sec:ipr}) đã gom số bác bỏ toàn bộ họ refinement. Bảng đầy đủ 26 hàng (9 cột, cả hai bank chấm, cả hai loại checkpoint) nằm trong audit nội bộ; đây là bản rút gọn theo câu hỏi kiến trúc:
+
+\begin{table}[t]
+\centering
+\caption{Ablation kiến trúc trung tâm (CUB). Hàng 1--2 là cặp đối trọng \emph{chỉ khác bank chấm} (cùng trọng số) — bằng chứng trực tiếp refine hại inference. Hàng 2 vs hàng cuối KHÔNG phải đối trọng thuần: v8 còn khác R6b ở $\lambda_{sem}, \lambda_{trans}$ và đường text live-vs-precomputed (xem §\ref{sec:ipr}); chênh lệch $u$ $51.8$ vs $50.2$ nằm trong vùng nhiễu single-seed và không quy được cho IPR.}
+\label{tab:ablation-refine}
+\small
+\begin{tabular}{llrrr}
+\toprule
+Cấu hình & Bank & T1 & u & H \\
+\midrule
+v8 (IPR on) & refined & 71.0 & 36.8 & 49.5 \\
+v8 (IPR on) & semantic & 74.4 & 51.8 & 58.1 \\
+R3 (residual) & refined & 69.6 & 1.4 & 2.7 \\
+E5 (TTA trên R6b) & centroid & 74.2 & 50.3 & 56.4 \\
+\midrule
+\textbf{R6b (không refine theo instance/lớp)} & semantic & \textbf{74.4} & \textbf{50.2} & \textbf{56.4} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\todo{Người viết experiments: bổ sung bảng đầy đủ 9 cột $\times$ 26 hàng từ docs/bao\_cao\_thuc\_nghiem\_v9.md §7.2 vào appendix; đường cong training-degrades-unseen (R3/R4: $u \to 0$ trong 3 epoch) ở §7.3 làm figure; phân tích thêm cặp bank-leak (hàng 1 vs 2: train với refine nhưng eval bỏ refine lại \emph{tăng} — bằng chứng refine là nhiễu ròng lúc suy luận).}
+
+\subsection{Negative results có kiểm định}
+\label{sec:exp:negative}
+
+Chúng tôi báo cáo đủ các hướng đã thử và \emph{bác bỏ bằng bằng chứng}, vì chúng là đối trọng khoa học cho phần kiến trúc — mỗi cái khử một lời giải thích thay thế cho việc unseen hưởng lợi từ $W_s$:
+
+\begin{enumerate}
+\item \textbf{Prototype-side CSLS hubness correction} (Dinu \& Baroni; Conneau): mọi $\beta$ đều dưới baseline (tốt nhất 73.8 vs 74.4). Nguyên nhân đo được: Spearman$(r(c),\text{win-count}) = -0.37$ trên unseen — mật độ prototype tương quan \emph{âm} với việc thắng trong pipeline sau $W_s$; modality gap (proto--proto ${\sim}0.85$ vs ảnh--proto ${\sim}0.25$) làm term hiệu chỉnh ở thang sai.
+\item \textbf{Per-sentence ensemble scoring} (CuPL-style): $72.5$ vs $74.4$ — vì $\lambda_{sem}=2.0$ neo $W_s$ vào $\varphi$ mean-4-trường; đổi cách chấm không-train-lại phá cấu trúc đã học.
+\item \textbf{Hybrid attr grounded} (thuộc tính GT sạch thay $a_c$ plan5): T1 $-1.0$, $u$ $-3.0$ — thành phần chung của attr cũ mang tín hiệu chuyển giao (đối trọng cho claim ``sạch hóa ngữ nghĩa luôn tốt'').
+\item \textbf{DPE/TransCLIP-style TTA} (bảng riêng transductive): H flat 56.4, T1 giảm nhẹ mọi $\lambda$ — khi text bank đã được $W_s$ train trên seen, centroid visual test-time chỉ thêm nhiễu.
+\item \textbf{WaffleCLIP controls} (đối chứng dương tính cho semantics): name-repeat 70.9, random-words 69.9, vs plan5-$\varphi$ 74.4 — trong pipeline \emph{có huấn luyện}, semantics đầy đủ mang $+3.5$--$4.5$ T1; averaging thuần không còn là driver duy nhất như ở zero-shot không train.
+\end{enumerate}
+
+\todo{Người viết experiments: mỗi mục thành subsubsection kèm bảng mini + trích log; số nguyên văn đã lưu auditlog.md E2--E5 và P4.}
+
+% ===========================================================================
+\section{Conclusion}
+\todo{Kết luận: (1) kiến trúc với đúng 32{,}768 tham số (0.038\% backbone), toàn bộ phía ngữ nghĩa, đạt 74.4/84.9/95.9/89.2 T1 trên 4 benchmark — bằng chứng rằng trong design space prototype-matching trên B/16 đóng băng, phần lớn năng lực nằm ở pipeline semantics + việc \emph{không} mở thêm kênh gradient seen chạm prototype; (2) thông điệp kiến trúc: mọi biến thể refinement theo instance/lớp bị bác bỏ bởi cùng một cơ chế seen-hub; ``Refinement Network'' được định nghĩa lại = refine chòm prototype bằng hàm dùng chung; (3) hướng duy nhất chưa thử trong design space: kênh thông tin ngoài text-space (attribute head từ ảnh); (4) mở rộng đã chứng minh tái lập: 4/4 bộ với cùng một công thức.}
+
+% ===========================================================================
+\bibliographystyle{plain}
+\begin{thebibliography}{00}
+\bibitem{clip} A. Radford et al., ``Learning Transferable Visual Models From Natural Language Supervision,'' ICML 2021.
+\bibitem{coop} K. Zhou et al., ``Learning to Prompt for Vision-Language Models,'' IJCV 2022.
+\bibitem{cocoop} K. Zhou et al., ``Conditional Prompt Learning for Vision-Language Models,'' CVPR 2022.
+\bibitem{cupl} C. Pratt et al., ``CuPL: What Does a Multi-Modal LLM Need to Know to Replace a Visual Description?'' ICCV 2023.
+\bibitem{waffle} A. Roth et al., ``WaffleCLIP: A Simple and Effective Method for Zero-Shot Image Classification,'' ICCV 2023.
+\bibitem{flcslwgan} Y. Xian et al., ``Feature Generating Networks for Zero-Shot Learning,'' CVPR 2018.
+\bibitem{dpe} C. Zhang et al., ``Dual Prototype Evolving for Test-Time Generalization of Vision-Language Models,'' NeurIPS 2024.
+\bibitem{transclip} M. Zanella et al., ``Harnessing the Power of Transductive Test-Time Augmentation,'' NeurIPS 2024.
+\bibitem{dinu} G. Dinu, M. Baroni, ``Improving Zero-Shot Learning by Mitigating the Hubness Problem,'' ICLR 2015.
+\bibitem{csls} A. Conneau et al., ``Word Translation Without Parallel Data,'' ACL 2018.
+\bibitem{chao} W.-L. Chao et al., ``An Empirical Study and Analysis of Generalized Zero-Shot Learning,'' TPAMI 2016.
+\bibitem{psvma} S. Liu et al., ``PSVMA,'' CVPR 2023; PSVMA+, TPAMI 2024.
+\bibitem{lpft} A. Kumar et al., ``Fine-Tuning can Distort Pretrained Features and Badly Reduce Down-stream Accuracy,'' ICLR 2023.
+\bibitem{modalitygap} V. Liang et al., ``Mind the Gap: Understanding the Modality Gap in Multi-Modal Contrastive Representation Learning,'' NeurIPS 2022.
+\bibitem{rcnn} \todo{điền citation đầy đủ RCNn (ICCV 2025) — atomic descriptor prompting.}
+\end{thebibliography}
+
+\end{document}

@@ -1,0 +1,89 @@
+# HSPRN-v10 A0 (full) — APY, CLIP ViT-B/16 — Cross-Attention IPR + anchored MFA + L_attn.
+# Clone apy_clip_v96_r6_plan5_b16.yaml (baseline T1 84.9), giữ phi path + Ws low-rank
+# + loss/schedule. 5 nhánh v10 như cub_clip_v10_ca_b16.yaml (xem comment đầy đủ ở đó):
+# levels + cls_anchor / MFA anchored / IPR cross-attn (lam_r=0) / L_attn 0.3
+# (GT attributes 64-d) / lambda_trans 0.0.
+# Gate: T1 >= 85.2 (baseline + 0.3).
+# Ablations: A1 = eval A0 ckpt voi --score_bank semantic;
+#            A2 = apy_clip_v10_a2_mfacls.yaml; A3 = apy_clip_v10_a3_noattn.yaml.
+
+data:
+  dataset: "APY"
+  source: "prepared"
+  prepared_root: "./prepared_datasets"
+  data_root: "./data"
+  image_root: "./datasets"
+  mode: "image"
+  image_size: 224
+  image_preprocess: "clip"
+  batch_size: 256
+  num_workers: 12
+  subset_size: null
+  eval_subset_size: null
+  drop_last: false
+  semantic_source: "embedding"
+  semantic_embedding_path: "./pre-trained/apy_v96_phi_b16.pt"
+  semantic_metadata_path: null
+
+experiment:
+  unify_after_llm: false
+
+model:
+  vision:
+    freeze: true
+    backbone_type: "clip_vit_b16"
+    clip_model: "./pre-trained/ViT-B-16.pt"
+    pretrained: true
+    levels: ["block_4", "block_8", "block_12"]
+    cls_anchor: true
+  semantic:
+    freeze: true
+    backbone_type: "embedding"
+    input_dim: 512
+    shared_dim: 512
+    ws_rank: 32
+    ws_anchor: 0.01
+    field_norm: false
+  aggregator:
+    mode: "anchored"
+    level_dims: [768, 768, 768]
+    out_dim: 512
+  refiner:
+    enabled: true
+    mode: "cross_attn"
+    token_dim: 768
+    gate_bias_init: -2.0
+    lambda_r_init: 0.0
+    attribute_query_path: "./pre-trained/apy_attrq_b16.pt"
+  loss:
+    return_full_output: true
+    use_full: true
+    temperature: 0.07
+    lambda1: 1.0
+    lambda2: 0.1
+    lambda3: 0.5
+    lambda_sem: 2.0
+    lambda_trans: 0.25
+    tau_teacher: 0.1
+    align_mode: "nce"
+    pres_target: "all"
+    pres_mode: "cosine"
+    lambda_attn: 0.3
+
+training:
+  epochs: 80
+  lr: 1.5e-4
+  weight_decay: 1.0e-4
+  optimizer: "adamw"
+  scheduler: "cosine"
+  warmup_epochs: 5
+  seed: 42
+  eval_freq: 1
+  save_dir: "./checkpoints/apy_clip_v10_ca_b16"
+  log_dir: "./logs/apy_clip_v10_ca_b16"
+  amp: false
+
+eval:
+  mode: "both"
+
+feature_level: "multilevel"

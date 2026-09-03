@@ -76,6 +76,29 @@ class ZSLEvaluator:
         preds = masked_scores.argmax(dim=1)
         return compute_per_class_acc(labels, preds, self.unseen_classes)
 
+    def eval_zsl_seen(self, scores, labels):
+        """Seen-only ZSL variant: predict only among seen classes.
+
+        Mirror of eval_zsl for the seen split — closed-world Top-1 per-class
+        accuracy on seen test samples with the candidate set restricted to
+        seen classes (unseen masked to -inf).
+
+        Args:
+            scores: (N, C_total) compatibility scores for seen test samples.
+            labels: (N,) ground-truth labels for seen test samples.
+
+        Returns:
+            float: Top-1 per-class accuracy on seen classes (seen-only ZSL).
+        """
+        # Mask unseen classes to -inf so argmax only picks seen
+        masked_scores = scores.clone()
+        for c in range(scores.shape[1]):
+            if c not in self.seen_classes:
+                masked_scores[:, c] = -float("inf")
+
+        preds = masked_scores.argmax(dim=1)
+        return compute_per_class_acc(labels, preds, self.seen_classes)
+
     def eval_gzsl(self, scores_seen, labels_seen, scores_unseen, labels_unseen):
         """Generalized ZSL: predict among all (seen + unseen) classes.
 
@@ -101,6 +124,42 @@ class ZSLEvaluator:
             H = 2 * u * s / (u + s)
 
         return u, s, H
+
+    def hubness_stats(self, scores_seen, scores_unseen):
+        """Top-1 hubness concentration diagnostic (seen vs unseen prototypes).
+
+        For each test sample, the winning class is its top-1 prototype. A
+        "hub" class wins far more samples than average; high concentration on
+        seen classes indicates hubness-driven seen-bias (SABR, CVPR 2019),
+        distinct from projection bias.
+
+        Args:
+            scores_seen: (N_s, C_total) scores for seen test samples.
+            scores_unseen: (N_u, C_total) scores for unseen test samples.
+
+        Returns:
+            dict with hub_seen_ratio / hub_unseen_ratio = max/mean top-1
+            occurrence over the respective class group (1.0 = uniform).
+        """
+        import collections
+
+        preds = torch.cat(
+            [scores_seen.argmax(dim=1), scores_unseen.argmax(dim=1)], dim=0
+        ).cpu().numpy()
+
+        counts = collections.Counter(int(p) for p in preds)
+
+        def ratio(class_ids):
+            occ = [counts.get(int(c), 0) for c in class_ids]
+            mean_occ = float(np.mean(occ)) if len(occ) else 0.0
+            if mean_occ <= 0:
+                return 1.0
+            return float(max(occ)) / mean_occ
+
+        return {
+            "hub_seen_ratio": ratio(self.seen_classes),
+            "hub_unseen_ratio": ratio(self.unseen_classes),
+        }
 
     def _apply_calibration(self, scores, gamma):
         """Subtract gamma from seen-class scores (calibrated stacking)."""

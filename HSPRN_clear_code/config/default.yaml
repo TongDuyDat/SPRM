@@ -1,0 +1,82 @@
+# ============================================================
+# HSPRN-v14 Super-CLIP Default Base Configuration
+# ============================================================
+# Per-dataset configs inherit from this and override as needed.
+
+data:
+  dataset: "CUB"
+  source: "prepared"              # prepared | legacy
+  prepared_root: "./prepared_datasets"
+  data_root: "./data"
+  image_root: "./datasets"
+  mode: "image"                   # raw images -> CLIP ViT-B/16
+  image_size: 224
+  image_preprocess: "clip"
+  batch_size: 512
+  num_workers: 16
+  subset_size: null
+  eval_subset_size: null
+  drop_last: false
+  semantic_source: "embedding"    # embedding | class_desc | attribute
+  semantic_embedding_path: null
+  semantic_metadata_path: null
+
+experiment:
+  unify_after_llm: false
+
+model:
+  vision:
+    freeze: true
+    backbone_type: "clip_vit_b16"
+    clip_model: "./pre-trained/ViT-B-16.pt"
+    pretrained: true
+    levels: ["block_4", "block_8", "block_12"]
+    cls_anchor: true
+  semantic:
+    freeze: true
+    backbone_type: "embedding"
+    input_dim: 512
+    shared_dim: 512
+    ws_rank: 32
+    ws_anchor: 0.01
+    field_norm: false
+  aggregator:
+    mode: "anchored"
+    level_dims: [768, 768, 768]
+    out_dim: 512
+  refiner:
+    enabled: true
+    mode: "cross_attn"
+    token_dim: 768
+    gate_bias_init: -2.0
+    lambda_r_init: 0.05
+    cfg_mode: "legacy"
+    attribute_query_path: null
+  loss:
+    loss_mode: "tri_loss"
+    return_full_output: true
+    use_full: true
+    temperature: 0.07
+    attr_loss_type: "cosine"
+    pres_target: "all"
+
+training:
+  epochs: 50
+  phased_training: true
+  phase1_epochs: 15
+  phase2_epochs: 40
+  lr: 1.5e-4
+  weight_decay: 1.0e-4
+  optimizer: "adamw"
+  scheduler: "cosine"
+  warmup_epochs: 3
+  seed: 42
+  eval_freq: 1
+  save_dir: "./checkpoints"
+  log_dir: "./logs"
+  amp: false
+
+eval:
+  mode: "both"
+
+feature_level: "multilevel"
