@@ -1,0 +1,32 @@
+# FAMILY: MIT-States / UT-Zappos / C-GQA. Tri-Loss, CZSLSweep, 3-stage schedule 15/40/50.
+data:
+  batch_size: 256
+  num_workers: 8
+  source: czsl
+  type: CZSLSplit
+trainer:
+  type: CZSLTrainer
+training:
+  amp: false
+  epochs: 50
+  warmup_epochs: 3
+  phases:
+    '1':
+      epochs: 15
+      note: 'Grounding: open ipr, lock W_multi, W_local, Ws'
+      loss: {lambda_task: 0.0, lambda_visual: 0.0, lambda_attr: 1.0, lambda_cls: 0.0, lambda_rel: 0.0}
+      train: [ipr]
+      freeze: [mfa.W_multi, W_local, psc.Ws]
+      zero: [mfa.W_multi, W_local]
+    '2':
+      epochs: 40
+      note: 'Local-Global: open W_multi, W_local, lock ipr and Ws'
+      loss: {lambda_task: 1.0, lambda_visual: 2.0, lambda_attr: 0.0, lambda_cls: 0.1, lambda_rel: 0.0}
+      train: [mfa.W_multi, W_local]
+      freeze: [ipr, psc.Ws]
+    '3':
+      epochs: null
+      note: 'Ws calibration (also opens ipr.proto)'
+      loss: {lambda_task: 1.0, lambda_visual: 0.0, lambda_attr: 0.0, lambda_cls: 0.05, lambda_rel: 0.2}
+      train: [psc.Ws]
+      freeze: [ipr, mfa.W_multi, W_local]

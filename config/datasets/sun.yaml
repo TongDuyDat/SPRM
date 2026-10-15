@@ -1,0 +1,8 @@
+# DATASET: chỉ đường dẫn + họ bài toán. Không đặt siêu tham số ở đây.
+family: classic
+tag: sun
+slots: sun
+data:
+  data_root: ./data
+  dataset: SUN
+  semantic_embedding_path: ./pre-trained/sun_v96_phi_b16.pt

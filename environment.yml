@@ -1,4 +1,4 @@
-name: hsprn
+name: sprn
 channels:
   - conda-forge
   - pytorch
@@ -14,9 +14,6 @@ dependencies:
   - tqdm
   - pip
   - pip:
-    - timm
-    - transformers>=4.40,<5
-    - safetensors
-    - omegaconf
     - ftfy
     - regex
+    - pycocotools

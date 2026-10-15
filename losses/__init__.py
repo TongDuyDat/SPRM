@@ -1,5 +1,3 @@
-from .hsprn_loss import HSPRNLoss
+from .sprn_loss import SPRNLoss
 
-__all__ = [
-    "HSPRNLoss",
-]
+__all__ = ["SPRNLoss"]

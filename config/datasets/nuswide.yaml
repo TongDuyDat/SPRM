@@ -1,0 +1,12 @@
+# DATASET: chỉ đường dẫn + họ bài toán. Không đặt siêu tham số ở đây.
+# Cột: 925 tag seen (TagList1k \ Concepts81) rồi 81 concept unseen = 1006.
+# Slot LPR cần data_semantics_v2/BENCH6/nuswide-seen_class_semantics.json
+# (925 tag seen, sinh như COCO) -> tools/build_latent_slots.py.
+family: multilabel
+tag: nuswide
+slots: nuswide
+data:
+  data_root: bench6_data/nus-wide
+  dataset: nuswide
+  semantic_embedding_path: ./pre-trained/nuswide_phi_b16.pt
+  seen_semantic_embedding_path: ./pre-trained/nuswide_925seen_phi_b16.pt

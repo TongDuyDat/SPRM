@@ -1,0 +1,8 @@
+# DATASET: chỉ đường dẫn + họ bài toán. Không đặt siêu tham số ở đây.
+family: classic
+tag: apy
+slots: apy
+data:
+  data_root: ./data
+  dataset: APY
+  semantic_embedding_path: ./pre-trained/apy_v96_phi_b16.pt

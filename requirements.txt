@@ -5,10 +5,7 @@ scipy
 Pillow
 PyYAML
 tqdm
-timm
-transformers>=4.40,<5
-safetensors
-setuptools
-omegaconf
 ftfy
 regex
+setuptools
+pycocotools

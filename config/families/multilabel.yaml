@@ -1,0 +1,66 @@
+# FAMILY: MS-COCO / NUS-WIDE. ASL, MultilabelTopK, 3-stage schedule 8/24/30.
+data:
+  batch_size: 256
+  num_workers: 8
+  source: ml
+  type: MultilabelSplit
+model:
+  loss:
+    asl_clip: 0.05
+    asl_gamma_neg: 4.0
+    asl_gamma_pos: 0.0
+    lambda_task: 1.0
+    lambda_visual: 2.0
+    lambda_ws: 0.01
+trainer:
+  type: MultiLabelTrainer
+training:
+  amp: true
+  epochs: 30
+  phases:
+    '1':
+      epochs: 8
+      note: 'LPR grounding: open ipr, lock visual stream and Ws'
+      loss:
+        lambda_task: 0.0
+        lambda_visual: 0.0
+        lambda_attr: 1.0
+        lambda_rel: 0.0
+      train:
+      - ipr
+      freeze:
+      - mfa.W_multi
+      - W_local
+      - psc.Ws
+      zero:
+      - mfa.W_multi
+      - W_local
+    '2':
+      epochs: 24
+      note: 'Local-Global: open W_multi, W_local'
+      loss:
+        lambda_task: 1.0
+        lambda_visual: 2.0
+        lambda_attr: 0.0
+        lambda_rel: 0.0
+      train:
+      - mfa.W_multi
+      - W_local
+      freeze:
+      - ipr
+      - psc.Ws
+    '3':
+      epochs: null
+      note: Ws calibration
+      loss:
+        lambda_task: 1.0
+        lambda_visual: 0.0
+        lambda_attr: 0.0
+        lambda_rel: 0.2
+      train:
+      - psc.Ws
+      freeze:
+      - ipr
+      - mfa.W_multi
+      - W_local
+  warmup_epochs: 2

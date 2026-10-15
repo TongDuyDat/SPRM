@@ -1,0 +1,8 @@
+# DATASET: chỉ đường dẫn + họ bài toán. Không đặt siêu tham số ở đây.
+family: classic
+tag: awa2
+slots: awa2
+data:
+  data_root: ./data
+  dataset: AWA2
+  semantic_embedding_path: ./pre-trained/awa2_v96_phi_b16.pt

@@ -1,3 +1,9 @@
-from .trainer import Trainer
+"""Trainers: one per benchmark family, chosen by ``trainer.type`` in the config."""
 
-__all__ = ["Trainer"]
+from tools.registry import TRAINERS
+from .base import TrainerBase
+from .classic import ClassicTrainer
+from .czsl import CZSLTrainer
+from .multilabel import MultiLabelTrainer
+
+__all__ = ["TrainerBase", "ClassicTrainer", "CZSLTrainer", "MultiLabelTrainer", "TRAINERS"]

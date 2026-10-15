@@ -1,298 +1,183 @@
 #!/usr/bin/env python
-"""
-HSPRN Evaluation Entry Point.
+"""SPRN (LPR) evaluation entry point.
 
-Usage:
-    python eval.py --config config/awa2.yaml --ckpt checkpoints/AWA2/best.pth
+The protocol is fixed by the benchmark family (``data.type``):
+
+    PreparedZSL      -> ZSLPoint        classic ZSL/GZSL Top-1, u/s/H, calibrated
+    CZSLSplit        -> CZSLSweep       CZSL bias curve -> Best S/U/HM, AUC
+    MultilabelSplit  -> MultilabelTopK  multi-label top-k P/R/F1 + mAP
+
+Metric formulas live in tools/evaluator.py, tools/ml_evaluator.py,
+tools/czsl_exact_metrics.py and tools/czsl_evaluator.py, wrapped by tools/metrics.py.
+
+    python eval.py --dataset cub --checkpoint checkpoints/lpr/cub/CUB/final.pth
 """
 
 import argparse
-import os
-import torch
+import json
+import sys
+from pathlib import Path
 
-from tools.utils import load_config, set_seed, load_checkpoint
-from datasets import build_prepared_zsl_splits, build_zsl_splits
-from model.hsprn_model import HSPRN
-from tools.evaluator import ZSLEvaluator
+_ROOT = Path(__file__).resolve().parent
+if str(_ROOT) not in sys.path:
+    sys.path.insert(0, str(_ROOT))
+
+import torch
 from torch.utils.data import DataLoader, Subset
+
+from tools.metrics import METRICS
+from tools.registry import DATASETS
+from tools.utils import compose_config, set_seed
+
+import datasets.builders  # noqa: F401  (registers the builders)
+import tools.metrics  # noqa: F401  (registers the metrics)
+
+
+METRIC_OF = {"PreparedZSL": "ZSLPoint", "CZSLSplit": "CZSLSweep",
+             "MultilabelSplit": "MultilabelTopK"}
 
 
 def parse_args():
-    parser = argparse.ArgumentParser(description="Evaluate HSPRN for ZSL benchmark")
-    parser.add_argument("--config", type=str, required=True)
-    parser.add_argument("--ckpt", type=str, required=True, help="Path to checkpoint")
-    parser.add_argument("--data_root", type=str, default=None)
-    parser.add_argument("--prepared_root", type=str, default=None,
-                        help="Use a self-contained prepared_datasets root")
-    parser.add_argument("--device", type=str, default="cuda")
-    parser.add_argument("--semantic_embedding_path", type=str, default=None,
-                        help="Path to cached class semantic embeddings (.pt/.npy/.npz/.mat)")
-    parser.add_argument("--semantic_metadata_path", type=str, default=None,
-                        help="JSON/.pt path containing class semantics with name_c/attr_c/hier_c/desc_c")
-    parser.add_argument("--semantic_backbone", type=str, default=None,
-                        help="Override semantic backbone: clip, tinyclip, sbert, bert")
-    parser.add_argument("--semantic_pretrained_weights", type=str, default=None,
-                        help="Override semantic text-only model path or Hugging Face id")
-    parser.add_argument("--eval_subset_size", type=int, default=None,
-                        help="Evaluate the first N samples from each test split")
-    parser.add_argument("--num_workers", type=int, default=None,
-                        help="Override DataLoader worker count")
-    return parser.parse_args()
+    p = argparse.ArgumentParser(description="SPRN (LPR) evaluation")
+    p.add_argument("--dataset", required=True, help="config/datasets/<dataset>.yaml (e.g. cub)")
+    p.add_argument("--method", default="lpr")
+    p.add_argument("--checkpoint", required=True)
+    p.add_argument("--device", default="cuda")
+    p.add_argument("--output", default=None, help="Write metrics JSON here (parent dirs created).")
+    p.add_argument("--limit", type=int, default=None,
+                   help="Evaluate only the first N test samples (smoke test).")
+    p.add_argument("--batch_size", type=int, default=None)
+    p.add_argument("--seed", type=int, default=None)
+    return p.parse_args()
 
 
-def maybe_subset(dataset, size):
-    if size is None:
-        return dataset
-    return Subset(dataset, range(min(int(size), len(dataset))))
+def _score_loader(model, loader, phi, class_indices, device):
+    """Scores for one loader against ``class_indices`` rows of phi.
 
-
-def resolve_semantic_source(cfg):
-    data_cfg = cfg.data
-    source = getattr(data_cfg, "semantic_source", "auto")
-    if source is None:
-        source = "auto"
-    source = str(source).lower()
-    if source == "auto":
-        if getattr(data_cfg, "semantic_embedding_path", None):
-            return "embedding"
-        if getattr(data_cfg, "semantic_metadata_path", None):
-            return "class_desc"
-        return "attribute"
-    allowed = {"attribute", "embedding", "class_desc"}
-    if source not in allowed:
-        raise ValueError(
-            f"Unknown data.semantic_source={source!r}. Expected one of {sorted(allowed)}."
-        )
-    return source
-
-
-def configure_semantic_input(cfg, attribute, semantic_source):
-    semantic_cfg = cfg.model.semantic
-    if semantic_source == "class_desc":
-        backbone_type = getattr(semantic_cfg, "backbone_type", "embedding")
-        if backbone_type in {"attribute", "identity", "embedding"}:
-            raise ValueError(
-                "semantic_source='class_desc' requires a text semantic backbone "
-                "such as 'clip' or 'bert', not backbone_type='embedding'."
-            )
-        if getattr(semantic_cfg, "input_dim", None) is not None:
-            raise ValueError(
-                "semantic_source='class_desc' must keep model.semantic.input_dim null. "
-                "Raw name_c/attr_c/hier_c/desc_c records are encoded by the text backbone."
-            )
-        shared_dim = getattr(semantic_cfg, "shared_dim", None)
-        out_dim = getattr(cfg.model.aggregator, "out_dim", None)
-        if shared_dim != out_dim:
-            raise ValueError(
-                "Full HSPRN evaluation requires model.semantic.shared_dim == "
-                "model.aggregator.out_dim. Got "
-                f"shared_dim={shared_dim}, out_dim={out_dim}."
-            )
-        return
-
-    cfg.model.semantic.input_dim = int(attribute.shape[1])
-
-
-def semantic_input(attribute, class_semantics, class_indices, device):
-    if class_semantics is not None:
-        return {
-            str(int(class_index)): class_semantics[int(class_index)]
-            for class_index in class_indices
-        }
-    return {
-        str(int(class_index)): attribute[int(class_index)].to(device)
-        for class_index in class_indices
-    }
-
-
-@torch.no_grad()
-def compute_all_scores(
-    model,
-    loader,
-    attribute,
-    class_semantics,
-    class_indices,
-    num_total_classes,
-    device,
-):
-    """Compute compatibility scores for all samples against given classes."""
+    Returns (scores [N, len(class_indices)], labels). The model consumes an attribute
+    dict keyed by GLOBAL class id; score columns follow ``class_indices`` order.
+    """
     model.eval()
-    all_scores = []
-    all_labels = []
+    attr = {str(int(c)): phi[int(c)].to(device) for c in class_indices}
+    chunks, labels = [], []
+    with torch.no_grad():
+        for batch in loader:
+            imgs, target = batch[0], batch[1]
+            out = model(attr, imgs.to(device))
+            chunks.append(out.scores.float().cpu())
+            labels.append(target)
+    return torch.cat(chunks, dim=0), torch.cat(labels, dim=0)
 
-    attr = semantic_input(attribute, class_semantics, class_indices, device)
 
-    for batch in loader:
-        features, labels = batch[:2]
-        features = features.to(device)
-        out = model(attr, features)
-        scores_subset = out.scores if hasattr(out, 'scores') else out
+def _limited(ds, limit):
+    return Subset(ds, range(min(limit, len(ds)))) if limit else ds
 
-        scores_full = torch.full(
-            (features.size(0), num_total_classes),
-            -float("inf"), device=device
-        )
-        for i, c in enumerate(class_indices):
-            scores_full[:, c] = scores_subset[:, i]
 
-        all_scores.append(scores_full.cpu())
-        all_labels.append(labels)
+def _loader(ds, bs, nw, device):
+    return DataLoader(ds, batch_size=bs, shuffle=False, num_workers=nw,
+                      pin_memory=device == "cuda")
 
-    return torch.cat(all_scores, dim=0), torch.cat(all_labels, dim=0)
+
+def eval_classic(args, cfg, built, model, phi, device):
+    bs = int(args.batch_size or cfg.data.batch_size)
+    nw = int(cfg.data.num_workers)
+    seen_loader = _loader(_limited(built["test_seen"], args.limit), bs * 2, nw, device)
+    unseen_loader = _loader(_limited(built["test_unseen"], args.limit), bs * 2, nw, device)
+
+    seen_classes, unseen_classes = built["seen_classes"], built["unseen_classes"]
+    num_total = int(phi.shape[0])
+    all_classes = list(map(int, seen_classes)) + list(map(int, unseen_classes))
+
+    # Score in the full class space with -inf outside the candidate set, which is what
+    # ZSLEvaluator expects (and what makes seen/unseen comparable).
+    def full_scores(loader, desc):
+        sub, labels = _score_loader(model, loader, phi, all_classes, device)
+        full = torch.full((sub.size(0), num_total), -float("inf"))
+        for i, c in enumerate(all_classes):
+            full[:, c] = sub[:, i]
+        print(f"  {desc}: {tuple(full.shape)}")
+        return full, labels
+
+    scores_seen, labels_seen = full_scores(seen_loader, "scored seen")
+    scores_unseen, labels_unseen = full_scores(unseen_loader, "scored unseen")
+    metric = METRICS.build("ZSLPoint", seen_classes=seen_classes, unseen_classes=unseen_classes)
+    return metric.compute(scores_seen, labels_seen, scores_unseen, labels_unseen)
+
+
+def eval_czsl(args, cfg, built, model, phi, device):
+    bench = built["bench"]
+    bs = int(args.batch_size or cfg.data.batch_size)
+    loader = _loader(_limited(bench["dataset_test"], args.limit), bs, int(cfg.data.num_workers), device)
+    scores, labels = _score_loader(model, loader, phi, list(range(phi.shape[0])), device)
+    print(f"  scored {tuple(scores.shape)}")
+    metric = METRICS.build("CZSLSweep", bench=bench, universe="closed")
+    return metric.compute(scores, labels)
+
+
+def eval_multilabel(args, cfg, built, model, phi, device):
+    import numpy as np
+
+    test_ds = built["test_unseen"]
+    bs = int(args.batch_size or cfg.data.batch_size)
+    loader = _loader(_limited(test_ds, args.limit), bs, int(cfg.data.num_workers), device)
+    scores, _ = _score_loader(model, loader, phi, list(range(phi.shape[0])), device)
+    print(f"  scored {tuple(scores.shape)}")
+    targets = np.asarray(test_ds.eval_targets, dtype=np.float32)[: scores.shape[0]]
+    metric = METRICS.build("MultilabelTopK", unseen_pos=list(map(int, built["unseen_classes"])))
+    return metric.compute(scores.numpy(), targets)
 
 
 def main():
     args = parse_args()
-
-    default_cfg_path = os.path.join(os.path.dirname(args.config), "default.yaml")
-    cfg = load_config(args.config, default_path=default_cfg_path)
-
-    if args.data_root:
-        cfg.data.data_root = args.data_root
-    if args.prepared_root:
-        cfg.data.source = "prepared"
-        cfg.data.prepared_root = args.prepared_root
-    if args.semantic_embedding_path is not None:
-        cfg.data.semantic_embedding_path = args.semantic_embedding_path
-    if args.semantic_metadata_path is not None:
-        cfg.data.semantic_metadata_path = args.semantic_metadata_path
-    if args.semantic_backbone is not None:
-        cfg.model.semantic.backbone_type = args.semantic_backbone
-    if args.semantic_pretrained_weights is not None:
-        cfg.model.semantic.pretrained_weights = args.semantic_pretrained_weights
-    if args.eval_subset_size is not None:
-        cfg.data.eval_subset_size = args.eval_subset_size
-    if args.num_workers is not None:
-        cfg.data.num_workers = args.num_workers
-
+    cfg, _ = compose_config(args.dataset, args.method)
+    if args.seed is not None:
+        cfg.training.seed = args.seed
     set_seed(cfg.training.seed)
 
     device = args.device
     if device == "cuda" and not torch.cuda.is_available():
+        print("CUDA not available, falling back to CPU")
         device = "cpu"
 
-    # Dataset
-    dataset_name = cfg.data.dataset
-    data_root = cfg.data.data_root
-    data_source = str(getattr(cfg.data, "source", "legacy")).lower()
-    prepared_root = getattr(cfg.data, "prepared_root", "./prepared_datasets")
-    if data_source not in {"legacy", "prepared"}:
-        raise ValueError("data.source must be 'legacy' or 'prepared'.")
-    source_root = prepared_root if data_source == "prepared" else data_root
-    print(f"Loading dataset: {dataset_name} from {source_root} ({data_source})")
+    data_type = cfg.data.type
+    metric_type = METRIC_OF[data_type]
+    print("=" * 70)
+    print(f"SPRN eval | data.type={data_type} eval.type={metric_type}")
+    print(f"dataset={args.dataset} ckpt={args.checkpoint}")
+    print("=" * 70)
 
-    semantic_embedding_path = getattr(cfg.data, "semantic_embedding_path", None)
-    semantic_metadata_path = getattr(cfg.data, "semantic_metadata_path", None)
-    if data_source == "prepared" and getattr(cfg.data, "semantic_source", "auto") == "auto":
-        cfg.data.semantic_source = "class_desc"
-    semantic_source = resolve_semantic_source(cfg)
-    cfg.data.semantic_source = semantic_source
-    data_mode = getattr(cfg.data, "mode", "image")
-    image_preprocess = getattr(cfg.data, "image_preprocess", None)
-    if image_preprocess is None:
-        image_preprocess = "clip" if "clip" in cfg.model.vision.backbone_type.lower() else "imagenet"
-    if data_source == "prepared":
-        if data_mode != "image":
-            raise ValueError("Prepared dataset packages currently support data.mode='image' only.")
-        semantic_embedding_path = None
-        splits = build_prepared_zsl_splits(
-            prepared_root,
-            dataset_name,
-            require_full_semantics=True,
-            image_size=getattr(cfg.data, "image_size", 224),
-            image_preprocess=image_preprocess,
-        )
-        semantic_metadata_path = str(
-            splits["test_seen"].package_dir / "metadata" / "class_semantics.json"
-        )
-    else:
-        splits = build_zsl_splits(
-            data_root,
-            dataset_name,
-            semantic_embedding_path=semantic_embedding_path,
-            semantic_metadata_path=semantic_metadata_path,
-            require_full_semantics=True,
-            mode=data_mode,
-            image_root=getattr(cfg.data, "image_root", None),
-            image_size=getattr(cfg.data, "image_size", 224),
-            image_preprocess=image_preprocess,
-        )
-    test_seen = splits["test_seen"]
-    test_unseen = splits["test_unseen"]
-    attribute = splits["attribute"]
-    seen_classes = splits["seen_classes"]
-    unseen_classes = splits["unseen_classes"]
-    configure_semantic_input(cfg, attribute, semantic_source)
-    class_semantics = None
-    if semantic_source == "class_desc":
-        class_semantics = test_seen.get_class_semantics()
+    # The builder also sets cfg.model.semantic.input_dim (classic), which the model needs.
+    built = DATASETS.build(data_type, cfg)
 
-    eval_subset_size = getattr(cfg.data, "eval_subset_size", None)
-    test_seen = maybe_subset(test_seen, eval_subset_size)
-    test_unseen = maybe_subset(test_unseen, eval_subset_size)
+    from model.sprn_model import SPRN
 
-    print(f"  Data mode: {data_mode} (raw images -> visual backbone)")
-    print(f"  Test seen: {len(test_seen)} samples")
-    print(f"  Test unseen: {len(test_unseen)} samples")
-    print(f"  Seen classes: {len(seen_classes)}, Unseen: {len(unseen_classes)}")
-    if semantic_source == "class_desc":
-        print(f"  Semantic source: raw class-desc JSON ({semantic_metadata_path})")
-    elif semantic_source == "embedding":
-        print(f"  Semantic dim: {attribute.shape[1]} ({semantic_embedding_path})")
-    else:
-        print(f"  Semantic dim: {attribute.shape[1]} (class attributes)")
+    model = SPRN(cfg).to(device)
+    ckpt = torch.load(args.checkpoint, map_location=device, weights_only=False)
+    model.load_state_dict(ckpt["model_state_dict"], strict=True)
+    phi = built["attribute"].detach().float().to(device)
 
-    bs = getattr(cfg.data, "batch_size", 64) * 2
-    nw = getattr(cfg.data, "num_workers", 4)
-    test_seen_loader = DataLoader(
-        test_seen, batch_size=bs, shuffle=False, num_workers=nw,
-        pin_memory=device == "cuda",
-    )
-    test_unseen_loader = DataLoader(
-        test_unseen, batch_size=bs, shuffle=False, num_workers=nw,
-        pin_memory=device == "cuda",
-    )
+    fn = {"PreparedZSL": eval_classic, "CZSLSplit": eval_czsl, "MultilabelSplit": eval_multilabel}[data_type]
+    out = fn(args, cfg, built, model, phi, device)
 
-    # Model
-    model = HSPRN(cfg).to(device)
-    ckpt = load_checkpoint(args.ckpt, model)
-    print(f"Loaded checkpoint from epoch {ckpt.get('epoch', '?')}")
+    # Coverage check: every declared cell must be present and non-None.
+    missing = [k for k in getattr(METRICS.get(metric_type), "provides", ()) if out.get(k) is None]
 
-    # Evaluate
-    evaluator = ZSLEvaluator(seen_classes, unseen_classes)
-    num_total = attribute.shape[0]
+    name = Path(args.checkpoint).parent.name
+    printable = {k: v for k, v in out.items() if k != "curve"}
+    print(f"\nRESULT {name}")
+    print(json.dumps(printable, indent=2, default=str))
+    if missing:
+        raise SystemExit(f"COVERAGE_FAIL: {missing}")
 
-    # Score all classes once; ZSL evaluation masks seen classes internally.
-    all_cls = list(range(num_total))
-    scores_seen_gzsl, labels_seen_gzsl = compute_all_scores(
-        model, test_seen_loader, attribute, class_semantics,
-        all_cls, num_total, device
-    )
-    scores_unseen_gzsl, labels_unseen_gzsl = compute_all_scores(
-        model, test_unseen_loader, attribute, class_semantics,
-        all_cls, num_total, device
-    )
-    zsl_T1 = evaluator.eval_zsl(scores_unseen_gzsl, labels_unseen_gzsl) * 100
-    u, s, H = evaluator.eval_gzsl(
-        scores_seen_gzsl, labels_seen_gzsl,
-        scores_unseen_gzsl, labels_unseen_gzsl
-    )
-    cal_u, cal_s, cal_H, cal_gamma = evaluator.eval_gzsl_calibrated(
-        scores_seen_gzsl, labels_seen_gzsl,
-        scores_unseen_gzsl, labels_unseen_gzsl,
-    )
-
-    print(f"\n{'='*50}")
-    print(f"Dataset: {dataset_name}")
-    print(f"{'='*50}")
-    print(f"ZSL  T1:  {zsl_T1:.1f}%")
-    print(f"GZSL u:   {u*100:.1f}%")
-    print(f"GZSL s:   {s*100:.1f}%")
-    print(f"GZSL H:   {H*100:.1f}%")
-    print(f"Cal u:    {cal_u*100:.1f}%")
-    print(f"Cal s:    {cal_s*100:.1f}%")
-    print(f"Cal H:    {cal_H*100:.1f}% (gamma={cal_gamma:.2f})")
-    print(f"{'='*50}")
+    if args.output:
+        dst = Path(args.output)
+        dst.parent.mkdir(parents=True, exist_ok=True)
+        payload = dict(printable)
+        payload["_dataset"] = args.dataset
+        payload["_checkpoint"] = args.checkpoint
+        payload["_checkpoint_epoch"] = ckpt.get("epoch")
+        dst.write_text(json.dumps(payload, indent=2, default=str))
+        print(f"\nWrote {dst}")
 
 
 if __name__ == "__main__":

@@ -1,4 +1,4 @@
-"""Utility functions for HSPRN training and evaluation."""
+"""Utility functions for SPRN training and evaluation."""
 
 import os
 import random
@@ -17,6 +17,9 @@ class Config:
 
     def __init__(self, d):
         for k, v in d.items():
+            # YAML reads an unquoted `1:` (training.phases stage keys) as int;
+            # setattr needs a str. Readers of these keys (_stage_number) accept both.
+            k = str(k)
             if isinstance(v, dict):
                 setattr(self, k, Config(v))
             else:
@@ -26,37 +29,44 @@ class Config:
         return str(self.__dict__)
 
 
-def load_config(path, default_path=None):
-    """Load YAML config, optionally merging with a default config.
+def _deep_merge(base, override):
+    merged = dict(base)
+    for k, v in override.items():
+        if k in merged and isinstance(merged[k], dict) and isinstance(v, dict):
+            merged[k] = _deep_merge(merged[k], v)
+        else:
+            merged[k] = v
+    return merged
 
-    Args:
-        path: Path to dataset-specific YAML config.
-        default_path: Path to default YAML config (merged first).
 
-    Returns:
-        Config object.
+def compose_config(dataset, method="lpr", config_root="config"):
+    """Build a config from three layers: method < family < dataset.
+
+    method  (config/methods/<m>.yaml)   what the model is (LPR is the default)
+    family  (config/families/<f>.yaml)  the problem protocol: loss, metric, schedule
+    dataset (config/datasets/<d>.yaml)  paths only, plus which family it belongs to
+
+    ``{slots}`` in the method file is replaced by the dataset's slot prefix, and
+    checkpoints/logs go to ./checkpoints/<method>/<dataset> (never a legacy dir).
     """
-    def _merge(base, override):
-        """Recursively merge override into base."""
-        merged = base.copy()
-        for k, v in override.items():
-            if k in merged and isinstance(merged[k], dict) and isinstance(v, dict):
-                merged[k] = _merge(merged[k], v)
-            else:
-                merged[k] = v
-        return merged
+    def read(rel):
+        path = os.path.join(config_root, rel)
+        if not os.path.exists(path):
+            raise FileNotFoundError(f"{path} not found (dataset={dataset!r}, method={method!r})")
+        with open(path, "r") as f:
+            return yaml.safe_load(f) or {}
 
-    cfg_dict = {}
-
-    if default_path and os.path.exists(default_path):
-        with open(default_path, "r") as f:
-            cfg_dict = yaml.safe_load(f) or {}
-
-    with open(path, "r") as f:
-        override = yaml.safe_load(f) or {}
-
-    cfg_dict = _merge(cfg_dict, override)
-    return Config(cfg_dict)
+    ds = read(os.path.join("datasets", f"{dataset}.yaml"))
+    family, slots = ds.pop("family"), ds.pop("slots")
+    ds.pop("tag", None)
+    meth = read(os.path.join("methods", f"{method}.yaml"))
+    meth = yaml.safe_load(yaml.safe_dump(meth).replace("{slots}", slots))
+    fam = read(os.path.join("families", f"{family}.yaml"))
+    cfg = _deep_merge(_deep_merge(meth, fam), ds)
+    cfg.setdefault("training", {})
+    cfg["training"]["save_dir"] = f"./checkpoints/{method}/{dataset}"
+    cfg["training"]["log_dir"] = f"./logs/{method}/{dataset}"
+    return Config(cfg), cfg
 
 
 # ------------------------------------------------------------------
@@ -81,19 +91,6 @@ def save_checkpoint(state, filepath):
     """Save training checkpoint."""
     os.makedirs(os.path.dirname(filepath), exist_ok=True)
     torch.save(state, filepath)
-
-
-def load_checkpoint(filepath, model, optimizer=None):
-    """Load training checkpoint.
-
-    Returns:
-        dict with 'epoch' and any other saved state.
-    """
-    ckpt = torch.load(filepath, map_location="cpu")
-    model.load_state_dict(ckpt["model_state_dict"])
-    if optimizer and "optimizer_state_dict" in ckpt:
-        optimizer.load_state_dict(ckpt["optimizer_state_dict"])
-    return ckpt
 
 
 # ------------------------------------------------------------------

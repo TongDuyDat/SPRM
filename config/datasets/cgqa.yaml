@@ -1,0 +1,10 @@
+# DATASET: chỉ đường dẫn + họ bài toán. Không đặt siêu tham số ở đây.
+# CHƯA chạy được: thiếu pre-trained/cgqa_phi_b16.pt (φ CLIP B/16) và slot
+# pre-trained/cgqa_slots_k64_b16.pt -> tools/precompute_phi.py, build_latent_slots.py.
+family: czsl
+tag: cgqa
+slots: cgqa
+data:
+  data_root: bench6_data/cgqa
+  dataset: cgqa
+  semantic_embedding_path: ./pre-trained/cgqa_phi_b16.pt

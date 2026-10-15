@@ -1,0 +1,8 @@
+# DATASET: chỉ đường dẫn + họ bài toán. Không đặt siêu tham số ở đây.
+family: multilabel
+tag: coco
+slots: coco
+data:
+  data_root: bench6_data/coco
+  dataset: coco
+  semantic_embedding_path: ./pre-trained/coco_phi_b16.pt

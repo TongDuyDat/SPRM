@@ -1,0 +1,8 @@
+# DATASET: chỉ đường dẫn + họ bài toán. Không đặt siêu tham số ở đây.
+family: czsl
+tag: utzap
+slots: ut-zap50k
+data:
+  data_root: bench6_data/ut-zap50k
+  dataset: ut-zap50k
+  semantic_embedding_path: ./pre-trained/ut-zap50k_phi_b16.pt

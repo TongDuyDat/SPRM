@@ -1,0 +1,8 @@
+# DATASET: chỉ đường dẫn + họ bài toán. Không đặt siêu tham số ở đây.
+family: classic
+tag: cub
+slots: cub
+data:
+  data_root: ./data
+  dataset: CUB
+  semantic_embedding_path: ./pre-trained/cub_v8_phi_b16.pt

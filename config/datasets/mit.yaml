@@ -1,0 +1,8 @@
+# DATASET: chỉ đường dẫn + họ bài toán. Không đặt siêu tham số ở đây.
+family: czsl
+tag: mit
+slots: mit-states
+data:
+  data_root: bench6_data/mit-states
+  dataset: mit-states
+  semantic_embedding_path: ./pre-trained/mit-states_phi_b16.pt

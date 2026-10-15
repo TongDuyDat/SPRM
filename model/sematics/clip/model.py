@@ -334,7 +334,7 @@ class CLIPTextEncoder(nn.Module):
 
 
 class VisionTransformer(nn.Module):
-    def __init__(self, input_resolution: int, patch_size: int, width: int, layers: int, heads: int, output_dim: int, design_details, need_weights: bool = True):
+    def __init__(self, input_resolution: int, patch_size: int, width: int, layers: int, heads: int, output_dim: int, design_details, need_weights: bool = False):
         super().__init__()
         self.input_resolution = input_resolution
         self.output_dim = output_dim
@@ -454,11 +454,14 @@ class VisionTransformer(nn.Module):
 
         attn_weights = []
         for blk in self.transformer.resblocks[:-last_n_layers]:
-            if self.need_weights:
-                x, attn_w = blk(x)
-                attn_weights.append(attn_w.detach())
+            # ResidualAttentionBlock returns a tensor; IVLP blocks may return (x, attn_w).
+            out = blk(x)
+            if isinstance(out, (tuple, list)):
+                x = out[0]
+                if self.need_weights and len(out) > 1 and out[1] is not None:
+                    attn_weights.append(out[1].detach())
             else:
-                x = blk(x)
+                x = out
         output = 0
         for blk in self.transformer.resblocks[-last_n_layers:]:
             attn_output = self.custom_attn(blk.attn, blk.ln_1(x), model_type=model_type)
@@ -468,12 +471,14 @@ class VisionTransformer(nn.Module):
                 x_out = x + attn_output
                 x_out = x_out + blk.mlp(blk.ln_2(x_out))
                 output += x_out
-    
-            if self.need_weights:
-                x, attn_w = blk(x)
-                attn_weights.append(attn_w.detach())
+
+            out = blk(x)
+            if isinstance(out, (tuple, list)):
+                x = out[0]
+                if self.need_weights and len(out) > 1 and out[1] is not None:
+                    attn_weights.append(out[1].detach())
             else:
-                x = blk(x)
+                x = out
             
         x_cur = output
         x_ori = x

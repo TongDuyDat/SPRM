@@ -1,0 +1,30 @@
+# METHOD: Latent Prototype Refinement. {slots} is replaced by the dataset's `slots` prefix.
+data:
+  image_size: 224
+model:
+  aggregator:
+    level_dims: [768, 768, 768]
+    out_dim: 512
+  loss:
+    temperature: 0.07
+  refiner:
+    token_dim: 768
+    slot_path: ./pre-trained/{slots}_slots_k64_b16.pt
+    slot_target_path: ./pre-trained/{slots}_slottgt_k64_b16.pt
+    proto_tau: 0.07
+    proto_rho_init: 0.001
+    proto_gate_bias_init: -2.0
+  semantic:
+    backbone_type: embedding
+    input_dim: 512
+    shared_dim: 512
+    ws_anchor: 0.01
+    ws_rank: 32
+  vision:
+    clip_model: ./pre-trained/ViT-B-16.pt
+    levels: [block_4, block_8, block_12]
+training:
+  eval_freq: 1
+  lr: 0.00015
+  weight_decay: 0.0001
+  seed: 42
